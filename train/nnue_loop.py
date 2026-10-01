@@ -8,9 +8,10 @@ Chaque itération N (dossier data/nnue_loop/itNN/) :
      avec ce même réseau, + valeur exacte à ≤ 4 demi-coups de la fin ;
   2. export_features (meta.npy) puis export_nnue (entrées du réseau) ;
   3. train_nnue.py sur les --window dernières itérations (complétées par les données de l'ancienne boucle,
-     data/loop/it*, tant qu'elles comptent moins de --min-positions positions) → candidat itNN/nnue.bin ;
-  4. matchs à 100 ms : candidat contre champion (--match-games parties, décide la promotion),
-     candidat contre la classique et contre le réseau de départ (suivi) ;
+     data/loop/it*, tant qu'elles comptent moins de --min-positions positions) → un candidat par taille de
+     réseau (--hidden 64,128) : itNN/nnue_hH.bin ;
+  4. matchs à 100 ms : chaque candidat contre le champion (--match-games parties) ; le meilleur (borne basse la
+     plus haute) joue aussi contre la classique et contre le réseau de départ (suivi) ;
   5. promotion si la borne basse de l'intervalle à 95 % contre le champion dépasse --promote-lo (défaut 0 :
      amélioration significative ; un simple Elo > 0 promouvrait au hasard une fois sur deux à force égale).
 
@@ -45,7 +46,7 @@ p.add_argument("--label-depth", type=int, default=4)
 p.add_argument("--window", type=int, default=6, help="nombre d'itérations de données pour l'entraînement")
 p.add_argument("--min-positions", type=int, default=500_000,
                help="en dessous, on complète avec les données de l'ancienne boucle (data/loop/it*)")
-p.add_argument("--hidden", type=int, default=64)
+p.add_argument("--hidden", default="64,128", help="tailles de réseau candidates, séparées par des virgules")
 p.add_argument("--epochs", type=int, default=40)
 p.add_argument("--threads", type=int, default=20, help="threads de gen_data (les matchs en utilisent 10)")
 p.add_argument("--match-games", type=int, default=800)
@@ -193,15 +194,20 @@ try:
         window = [os.path.join(D, f"it{j:02d}") for j in range(max(1, it - args.window + 1), it + 1)]
         n_window = sum(n_positions(w) for w in window)
         data = window + (base_dirs if n_window < args.min_positions else [])
-        cand = os.path.join(d, "nnue.bin")
-        step(os.path.join(d, "train.ok"), lambda: run(
-            [PY, "train/train_nnue.py", "--data", ",".join(data), "--hidden", str(args.hidden),
-             "--epochs", str(args.epochs), "--no-linear", "--out", cand],
-            os.path.join(d, "train.log")))
+        # Un candidat par taille de réseau (--hidden 64,128) : chacun affronte le champion au temps.
+        cands = {}
+        for h in [int(x) for x in args.hidden.split(",")]:
+            c = os.path.join(d, f"nnue_h{h}.bin")
+            step(os.path.join(d, f"train_h{h}.ok"), lambda h=h, c=c: run(
+                [PY, "train/train_nnue.py", "--data", ",".join(data), "--hidden", str(h),
+                 "--epochs", str(args.epochs), "--no-linear", "--out", c],
+                os.path.join(d, f"train_h{h}.log")))
+            cands[h] = (c, match(f"candidat H={h} vs champion 100 ms", f"cand{h}@100 nnue={c}", f"champ@100 nnue={champ}",
+                                 args.match_games, os.path.join(d, f"match_champ_100_h{h}.txt")))
 
-        # 4. Matchs au temps.
-        rc = match("candidat vs champion 100 ms", f"cand@100 nnue={cand}", f"champ@100 nnue={champ}",
-                   args.match_games, os.path.join(d, "match_champ_100.txt"))
+        # 4. Le meilleur candidat (borne basse la plus haute) : matchs de suivi.
+        best_h = max(cands, key=lambda h: cands[h][1]["lo"])
+        cand, rc = cands[best_h]
         rk = match("candidat vs classique 100 ms", f"cand@100 nnue={cand}", "classique@100",
                    args.side_games, os.path.join(d, "match_classique_100.txt"))
         if champ == state["reference"]:
@@ -215,12 +221,14 @@ try:
         minutes = (time.time() - t_it) / 60
         if promoted:
             state["champion"] = cand
-        log(f"   → {'PROMU' if promoted else 'rejeté'} ; champion : {state['champion']} ; itération en {minutes:.0f} min")
+        log(f"   → {'PROMU' if promoted else 'rejeté'} (meilleur candidat H={best_h}) ; champion : {state['champion']} ; "
+            f"itération en {minutes:.0f} min")
         fmt = lambda r: f"{r['elo']:+d} ({r['lo']:+d} à {r['hi']:+d})"
         n_train = sum(n_positions(x) for x in data)
+        vs_champ = "<br>".join(f"H={h} : {fmt(r)}" for h, (_, r) in cands.items())
         with open(results_md, "a", encoding="utf-8") as f:
-            f.write(f"| {it} | {dt.datetime.now():%Y-%m-%d %H:%M} | {n_train} | {fmt(rc)} | {fmt(rk)} | {fmt(rr)} "
-                    f"| {'**oui**' if promoted else 'non'} | {minutes:.0f} min |\n")
+            f.write(f"| {it} | {dt.datetime.now():%Y-%m-%d %H:%M} | {n_train} | {vs_champ} | H={best_h} : {fmt(rk)} "
+                    f"| H={best_h} : {fmt(rr)} | {'**oui**' if promoted else 'non'} | {minutes:.0f} min |\n")
 
         state["next"] = it + 1
         json.dump(state, open(STATE, "w", encoding="utf-8"), indent=1)
