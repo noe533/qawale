@@ -6,6 +6,7 @@
 
 use crate::bot::{Bot, EvalParams, TtMode};
 use crate::features::LinearEval;
+use crate::nnue::Nnue;
 use std::sync::Arc;
 use crate::game::{Game, Move};
 use std::time::Duration;
@@ -88,9 +89,13 @@ pub struct BotSpec {
     pub tt: TtMode,
     pub tt_move: bool,
     pub tt_mb: usize,
+    pub ordering: bool,
+    pub pvs: bool,
     pub eval: EvalParams,
     /// Évaluation apprise chargée depuis un fichier (chemin, poids).
     pub eval_file: Option<(String, Arc<LinearEval>)>,
+    /// Réseau NNUE chargé depuis un fichier (chemin, réseau) ; prioritaire sur `eval_file`.
+    pub nnue_file: Option<(String, Arc<Nnue>)>,
 }
 
 /// Réglages prédéfinis, appliqués par-dessus le bot par défaut (= `full`).
@@ -113,9 +118,12 @@ Description d'un bot : [nom[@ms]] [clé=valeur]...
   table=    off | on | sym          (mémoire des positions, défaut sym)
   coup=     oui | non               (essayer d'abord le coup mémorisé, défaut oui)
   mem=      taille de la table en Mo (défaut 16)
+  tri=      oui | non               (trier les coups des nœuds intérieurs, défaut oui)
+  pvs=      oui | non               (recherche à fenêtre nulle après le premier coup, défaut oui)
   poids=    a,b,c,d                 poids d'une ligne libre avec 0..3 sommets (défaut 0,1,6,40)
   surface=  bonus par sommet contrôlé (défaut 2)
   eval=     fichier de poids appris (ex. data/eval_linear.txt) ; « classique » = évaluation d'origine
+  nnue=     fichier de réseau (train/train_nnue.py), prioritaire sur eval=
   base=     applique un réglage prédéfini
 Exemples : \"full@1000\"   \"essai base=full poids=0,2,12,100 prof=4\"   \"hasard\"";
 
@@ -129,8 +137,11 @@ impl Default for BotSpec {
             tt: TtMode::Symmetric,
             tt_move: true,
             tt_mb: 16,
+            ordering: true,
+            pvs: true,
             eval: EvalParams::default(),
             eval_file: None,
+            nnue_file: None,
         }
     }
 }
@@ -198,11 +209,14 @@ impl BotSpec {
             }
             "coup" | "ttmove" => self.tt_move = parse_bool(v)?,
             "mem" => self.tt_mb = parse_num(k, v)?,
+            "tri" | "order" => self.ordering = parse_bool(v)?,
+            "pvs" => self.pvs = parse_bool(v)?,
             "poids" | "weights" => {
                 let w: Vec<i32> = v.split(',').map(|x| parse_num(k, x)).collect::<Result<_, _>>()?;
                 self.eval.line_weight = w.try_into().map_err(|_| "poids= : 4 valeurs attendues (a,b,c,d)".to_string())?;
             }
             "surface" => self.eval.surface = parse_num(k, v)?,
+            "nnue" => self.nnue_file = Some((v.to_string(), Arc::new(Nnue::load(v)?))),
             "eval" => {
                 self.eval_file = if v == "classique" { None } else { Some((v.to_string(), Arc::new(LinearEval::load(v)?))) };
             }
@@ -238,8 +252,11 @@ impl BotSpec {
                 let time = self.effective_time(default_time).unwrap_or(Duration::from_secs(86_400));
                 let mut bot = Bot::with_tt(time, self.depth.unwrap_or(64), self.tt, self.tt_mb);
                 bot.use_tt_move = self.tt_move;
+                bot.ordering = self.ordering;
+                bot.pvs = self.pvs;
                 bot.eval = self.eval;
                 bot.linear = self.eval_file.as_ref().map(|(_, e)| e.clone());
+                bot.nnue = self.nnue_file.as_ref().map(|(_, n)| n.clone());
                 Box::new(AlphaBeta { name: self.name.clone(), bot })
             }
         }
@@ -259,9 +276,10 @@ impl BotSpec {
                 self.depth.map(|d| format!(", prof. max {d}")).unwrap_or_default(),
                 self.tt,
                 if self.tt_move { " + coup mémorisé" } else { "" },
-                match &self.eval_file {
-                    Some((path, _)) => format!("évaluation apprise {path}"),
-                    None => format!("poids {:?}, surface {}", self.eval.line_weight, self.eval.surface),
+                match (&self.nnue_file, &self.eval_file) {
+                    (Some((path, n)), _) => format!("réseau {path} ({}/{})", n.hidden, n.hidden2),
+                    (None, Some((path, _))) => format!("évaluation apprise {path}"),
+                    (None, None) => format!("poids {:?}, surface {}", self.eval.line_weight, self.eval.surface),
                 }
             ),
         }

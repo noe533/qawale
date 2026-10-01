@@ -1,0 +1,4 @@
+# Compile pour le processeur de cette machine (POPCNT, BMI2, AVX2…) : ~15 % plus rapide
+# sur l'évaluation (mesuré avec eval_speed). Le binaire ne tourne que sur un processeur aussi récent.
+[build]
+rustflags = ["-C", "target-cpu=native"]

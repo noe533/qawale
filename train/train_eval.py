@@ -20,7 +20,7 @@ import numpy as np
 import torch
 
 p = argparse.ArgumentParser()
-p.add_argument("--data", default="data/")
+p.add_argument("--data", default="data/", help="dossier(s) produits par export_features, séparés par des virgules")
 p.add_argument("--lam", type=float, default=0.8, help="poids de la recherche face au résultat de partie")
 p.add_argument("--epochs", type=int, default=40)
 p.add_argument("--models", default="linear,mlp_raw,mlp_both")
@@ -36,14 +36,20 @@ torch.manual_seed(args.seed)
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 t0 = time.time()
-F = np.load(args.data + "features.npy")
-R = np.load(args.data + "raw.npy")
-M = np.load(args.data + "meta.npy")
-names = open(args.data + "feature_names.txt", encoding="utf-8").read().split()
+dirs = [d if d.endswith(("/", "\\")) else d + "/" for d in args.data.split(",")]
+models = args.models.split(",")
+need_raw = any(m.startswith("mlp") for m in models)
+F = np.concatenate([np.load(d + "features.npy") for d in dirs])
+R = np.concatenate([np.load(d + "raw.npy") for d in dirs]) if need_raw else None
+metas = [np.load(d + "meta.npy") for d in dirs]
+for i, m in enumerate(metas):
+    m[:, 0] += 10_000_000 * i  # numéros de partie distincts entre dossiers (multiple de 10 : même découpage)
+M = np.concatenate(metas)
+names = open(dirs[0] + "feature_names.txt", encoding="utf-8").read().split()
 game, ply, left, player, result, sdepth, sscore, exact, escore, old = M.T
 total_plies = float(left.max())
 phi = 1.0 - left / total_plies
-print(f"{len(F)} positions, {F.shape[1]} caractéristiques, {R.shape[1]} entrées brutes — chargé en {time.time() - t0:.1f} s ({device})")
+print(f"{len(F)} positions ({len(dirs)} dossier(s)), {F.shape[1]} caractéristiques — chargé en {time.time() - t0:.1f} s ({device})")
 
 val = (game % 10) == 0
 tr = ~val
@@ -68,7 +74,7 @@ def fit_scale(score, target, mask, per_phase_offset):
 
 has_exact = ~np.isnan(exact)
 if args.label in ("d2", "d23"):
-    d2 = np.load(args.data + "relabel_d2.npy")[:, 1]
+    d2 = np.load(dirs[0] + "relabel_d2.npy")[:, 1]
 if args.label in ("d3", "d3c"):
     lab = sscore
 elif args.label == "d2":
@@ -147,7 +153,6 @@ def train(model, X, epochs, lr=3e-3, wd=0.0, batch=4096):
         return model, torch.tanh(model(Xt).squeeze(-1)).cpu().numpy()
 
 
-models = args.models.split(",")
 phi_col = phi[:, None].astype(np.float32)
 
 if "linear" in models:

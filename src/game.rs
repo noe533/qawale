@@ -226,6 +226,41 @@ impl fmt::Display for Move {
     }
 }
 
+/// Reçoit chaque changement de galet pendant la génération des coups (`for_each_child_obs`),
+/// pour tenir à jour une évaluation incrémentale (accumulateur NNUE).
+pub trait StoneObserver {
+    /// Galet de couleur `color` ajouté (`add`) ou retiré à l'étage `level` (0 = bas) de la case `sq`.
+    fn stone(&mut self, sq: usize, level: u8, color: u8, add: bool);
+    /// Le sommet de `sq` devient (`add`) ou cesse d'être de couleur `color`.
+    fn top(&mut self, sq: usize, color: u8, add: bool);
+}
+
+/// Observateur facultatif (par exemple un accumulateur seulement si le bot a un réseau).
+impl<T: StoneObserver> StoneObserver for Option<T> {
+    #[inline(always)]
+    fn stone(&mut self, sq: usize, level: u8, color: u8, add: bool) {
+        if let Some(o) = self {
+            o.stone(sq, level, color, add);
+        }
+    }
+    #[inline(always)]
+    fn top(&mut self, sq: usize, color: u8, add: bool) {
+        if let Some(o) = self {
+            o.top(sq, color, add);
+        }
+    }
+}
+
+/// Observateur vide : `for_each_child` sans surcoût.
+pub struct NoObserver;
+
+impl StoneObserver for NoObserver {
+    #[inline(always)]
+    fn stone(&mut self, _: usize, _: u8, _: u8, _: bool) {}
+    #[inline(always)]
+    fn top(&mut self, _: usize, _: u8, _: bool) {}
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Status {
     Ongoing,
@@ -444,6 +479,12 @@ impl Game {
     /// Si `f` renvoie `false`, l'énumération s'arrête (utile pour les coupures alpha-bêta).
     /// Renvoie `false` si l'énumération a été interrompue.
     pub fn for_each_child<F: FnMut(Move, &Game) -> bool>(&self, mut f: F) -> bool {
+        self.for_each_child_obs(&mut NoObserver, |m, g, _| f(m, g))
+    }
+
+    /// Comme `for_each_child`, en signalant à `obs` chaque galet ajouté ou retiré : quand `f` est
+    /// appelée, `obs` décrit exactement la position enfant. En sortie, `obs` décrit de nouveau `self`.
+    pub fn for_each_child_obs<O: StoneObserver, F: FnMut(Move, &Game, &O) -> bool>(&self, obs: &mut O, mut f: F) -> bool {
         if self.reserve[self.player as usize] == 0 {
             return true;
         }
@@ -451,9 +492,20 @@ impl Game {
         while occ != 0 {
             let sq = occ.trailing_zeros() as usize;
             occ &= occ - 1;
+            let h = self.heights[sq];
+            for i in 0..h {
+                obs.stone(sq, i, self.stone(sq, i), false);
+            }
+            let top = self.stone(sq, h - 1);
+            obs.top(sq, top, false);
             let mut g = *self;
             let (stack, len) = g.place_and_lift(sq);
-            if !walk(&mut g, sq, NONE, stack, len, Move::new(sq as u8), &mut f) {
+            let cont = walk(&mut g, sq, NONE, stack, len, Move::new(sq as u8), obs, &mut f);
+            for i in 0..h {
+                obs.stone(sq, i, self.stone(sq, i), true);
+            }
+            obs.top(sq, top, true);
+            if !cont {
                 return false;
             }
         }
@@ -517,17 +569,19 @@ impl Game {
 }
 
 /// DFS sur les chemins de dépôt : à chaque pas on dépose la tuile du bas de la main.
-fn walk<F: FnMut(Move, &Game) -> bool>(
+#[allow(clippy::too_many_arguments)]
+fn walk<O: StoneObserver, F: FnMut(Move, &Game, &O) -> bool>(
     g: &mut Game,
     sq: usize,
     prev: u8,
     hand: u64,
     remaining: u32,
     mv: Move,
+    obs: &mut O,
     f: &mut F,
 ) -> bool {
     if remaining == 0 {
-        return f(mv, g);
+        return f(mv, g, obs);
     }
     let color = (hand & 3) as u8;
     let back = prev ^ 1; // si prev == NONE, back vaut 0xFE : jamais égal à une direction
@@ -540,9 +594,20 @@ fn walk<F: FnMut(Move, &Game) -> bool>(
             continue;
         }
         let n = n as usize;
+        let (h, old_top) = (g.heights[n], g.top(n));
+        obs.stone(n, h, color, true);
+        if let Some(t) = old_top {
+            obs.top(n, t, false);
+        }
+        obs.top(n, color, true);
         g.push_stone(n, color);
-        let cont = walk(g, n, d, hand >> 2, remaining - 1, mv.push(d), f);
+        let cont = walk(g, n, d, hand >> 2, remaining - 1, mv.push(d), obs, f);
         g.pop_stone(n);
+        obs.top(n, color, false);
+        if let Some(t) = old_top {
+            obs.top(n, t, true);
+        }
+        obs.stone(n, h, color, false);
         if !cont {
             return false;
         }

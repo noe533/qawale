@@ -12,6 +12,7 @@
 //!   --random-max K     … maximum (défaut 8)
 //!   --epsilon P        probabilité de jouer un coup au hasard ensuite (défaut 0.05)
 //!   --label-depth D    étiquette « recherche » à profondeur D (0 = aucune, défaut 3)
+//!   --label-eval F     évaluation apprise pour l'étiquette recherche (défaut : classique)
 //!   --search-time MS   plafond par recherche ; au-delà, on garde la profondeur atteinte (défaut 2000)
 //!   --exact-plies K    résolution exacte si au plus K demi-coups restent (0 = aucune, défaut 5)
 //!   --exact-time MS    plafond par résolution ; au-delà, étiquette exacte vide (défaut 5000)
@@ -35,6 +36,7 @@
 //!   exact_score   score exact (distance à la victoire comprise)
 
 use qawale::bot::{Bot, TtMode, WIN};
+use qawale::features::LinearEval;
 use qawale::game::{Game, Status};
 use qawale::player::BotSpec;
 use qawale::progress::{fmt_duration, Progress};
@@ -51,6 +53,7 @@ struct Args {
     random_max: u32,
     epsilon: f64,
     label_depth: u32,
+    label_eval: Option<std::sync::Arc<LinearEval>>,
     search_time: Duration,
     exact_plies: u32,
     exact_time: Duration,
@@ -80,6 +83,7 @@ fn parse_args() -> Args {
         random_max: 8,
         epsilon: 0.05,
         label_depth: 3,
+        label_eval: None,
         search_time: Duration::from_millis(2000),
         exact_plies: 5,
         exact_time: Duration::from_millis(5000),
@@ -107,6 +111,9 @@ fn parse_args() -> Args {
             "--random-max" => a.random_max = num(val) as u32,
             "--epsilon" => a.epsilon = num(val),
             "--label-depth" => a.label_depth = num(val) as u32,
+            "--label-eval" => {
+                a.label_eval = Some(std::sync::Arc::new(LinearEval::load(val).unwrap_or_else(|e| usage(&format!("--label-eval : {e}")))))
+            }
             "--search-time" => a.search_time = Duration::from_millis(num(val) as u64),
             "--exact-plies" => a.exact_plies = num(val) as u32,
             "--exact-time" => a.exact_time = Duration::from_millis(num(val) as u64),
@@ -371,7 +378,7 @@ fn main() {
     let todo: Vec<usize> = (0..args.games).filter(|i| !done_games.contains(i)).collect();
     println!(
         "{} parties à jouer (sur {}), {} galets, joueur « {} », ouverture aléatoire {}-{} demi-coups, epsilon {}\n\
-         étiquettes : recherche prof. {} (plafond {} ms), exacte si ≤ {} demi-coups restants (plafond {} ms) — {} threads → {}",
+         étiquettes : recherche prof. {} (évaluation {}, plafond {} ms), exacte si ≤ {} demi-coups restants (plafond {} ms) — {} threads → {}",
         todo.len(),
         args.games,
         args.stones,
@@ -380,6 +387,7 @@ fn main() {
         args.random_max,
         args.epsilon,
         args.label_depth,
+        if args.label_eval.is_some() { "apprise" } else { "classique" },
         args.search_time.as_millis(),
         args.exact_plies,
         args.exact_time.as_millis(),
@@ -401,6 +409,7 @@ fn main() {
             let (next, args, todo) = (&next, &args, &todo);
             s.spawn(move || {
                 let mut labeler = Bot::with_tt(args.search_time, args.label_depth.max(1), TtMode::Symmetric, 32);
+                labeler.linear = args.label_eval.clone();
                 loop {
                     let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let Some(&game) = todo.get(i) else { break };

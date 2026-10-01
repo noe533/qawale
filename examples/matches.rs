@@ -1,5 +1,10 @@
-//! Tournoi entre joueurs quelconques : chaque paire joue les mêmes ouvertures aléatoires,
-//! une fois avec chaque couleur, en parallèle.
+//! Tournoi entre joueurs quelconques : chaque paire joue les mêmes ouvertures, toutes différentes
+//! à symétrie près, une fois avec chaque couleur, en parallèle.
+//!
+//! Ouvertures : à 2 ou 3 demi-coups, on énumère toutes les positions distinctes (250 à 2 demi-coups)
+//! puis on en tire autant que de paires de parties ; au-delà, tirage au hasard sans doublon.
+//! Sans cela, à profondeur fixe (bots déterministes), une même ouverture tirée deux fois donne
+//! deux fois la même partie et l'intervalle de confiance affiché serait trop étroit.
 //!
 //! cargo run --release --example matches -- --bot "full@1000" --bot "full@100" [options]
 //!
@@ -8,7 +13,7 @@
 //!   --games N          parties par paire (arrondi au pair, défaut 100)
 //!   --time MS          temps par coup des bots qui n'en précisent pas (défaut 100)
 //!   --stones N         galets par joueur (défaut 8)
-//!   --random-plies K   demi-coups aléatoires d'ouverture (défaut 2)
+//!   --random-plies K   demi-coups aléatoires d'ouverture (défaut 2 : au plus 250 ouvertures, soit 500 parties)
 //!   --threads T        parties en parallèle (défaut : moitié des cœurs logiques)
 //!   --verbose          affiche chaque partie coup par coup
 //!   --aide-bot         syntaxe de description d'un bot
@@ -17,7 +22,7 @@ use qawale::bot::WIN;
 use qawale::game::{Game, Move, Status, LINES};
 use qawale::player::{BotSpec, SPEC_HELP};
 use qawale::progress::{fmt_duration, Progress};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -105,7 +110,7 @@ fn xorshift(x: &mut u64) -> u64 {
 }
 
 /// Ouverture aléatoire de `plies` demi-coups, non terminale.
-fn opening(seed: u64, plies: u32, stones: u8) -> (Game, Vec<Move>) {
+fn random_opening(seed: u64, plies: u32, stones: u8) -> (Game, Vec<Move>) {
     let mut rng = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
     loop {
         let mut g = Game::with_stones(stones);
@@ -120,6 +125,57 @@ fn opening(seed: u64, plies: u32, stones: u8) -> (Game, Vec<Move>) {
             return (g, moves);
         }
     }
+}
+
+/// `n` ouvertures de `plies` demi-coups, distinctes à symétrie près tant que c'est possible
+/// (sinon la liste est reprise en boucle, avec un avertissement).
+fn openings(n: usize, plies: u32, stones: u8) -> Vec<(Game, Vec<Move>)> {
+    let mut distinct: Vec<(Game, Vec<Move>)> = Vec::new();
+    if plies <= 3 {
+        // Énumération complète, niveau par niveau (dans l'ordre de génération : déterministe).
+        let mut level = vec![(Game::with_stones(stones), Vec::new())];
+        for _ in 0..plies {
+            let mut seen = HashSet::new();
+            let mut next = Vec::new();
+            for (g, path) in &level {
+                g.for_each_child(|m, c| {
+                    if c.status() == Status::Ongoing && seen.insert(c.canonical_key()) {
+                        let mut p: Vec<Move> = path.clone();
+                        p.push(m);
+                        next.push((*c, p));
+                    }
+                    true
+                });
+            }
+            level = next;
+        }
+        // Mélange déterministe : les n premières forment un échantillon sans biais d'ordre.
+        let mut rng = 0x5EED_0F_0BE7u64;
+        for i in (1..level.len()).rev() {
+            let j = (xorshift(&mut rng) % (i as u64 + 1)) as usize;
+            level.swap(i, j);
+        }
+        distinct = level;
+        distinct.truncate(n);
+    } else {
+        let mut seen = HashSet::new();
+        let mut seed = 1000;
+        while distinct.len() < n && seed < 1000 + 1000 * n as u64 {
+            let (g, moves) = random_opening(seed, plies, stones);
+            if seen.insert(g.canonical_key()) {
+                distinct.push((g, moves));
+            }
+            seed += 1;
+        }
+    }
+    if distinct.len() < n {
+        println!(
+            "⚠ seulement {} ouvertures distinctes à {plies} demi-coups pour {n} demandées : elles seront rejouées \
+             (augmenter --random-plies pour des parties toutes différentes)\n",
+            distinct.len()
+        );
+    }
+    (0..n).map(|i| distinct[i % distinct.len()].clone()).collect()
 }
 
 /// Statistiques d'un camp sur une partie.
@@ -157,8 +213,8 @@ fn line_kind(g: &Game, color: u8) -> &'static str {
     if found.len() > 1 { "plusieurs lignes" } else { found[0] }
 }
 
-fn play_game(a: &BotSpec, b: &BotSpec, a_is_red: bool, seed: u64, args: &Args, pair: usize) -> GameRecord {
-    let (mut g, opening_moves) = opening(seed, args.random_plies, args.stones);
+fn play_game(a: &BotSpec, b: &BotSpec, a_is_red: bool, seed: u64, opening: &(Game, Vec<Move>), args: &Args, pair: usize) -> GameRecord {
+    let (mut g, opening_moves) = opening.clone();
     let mut players = [a.build(args.time), b.build(args.time)];
     for (i, p) in players.iter_mut().enumerate() {
         p.new_game(seed * 2 + i as u64);
@@ -216,6 +272,7 @@ fn main() {
             pairs.push((i, j));
         }
     }
+    let openings = openings(args.games / 2, args.random_plies, args.stones);
     // Tâches : (paire, graine d'ouverture, A joue rouge ?). Mêmes ouvertures pour toutes les paires.
     let mut jobs = Vec::new();
     for p in 0..pairs.len() {
@@ -248,7 +305,7 @@ fn main() {
                 let i = next.fetch_add(1, Ordering::Relaxed);
                 let Some(&(p, seed, a_red)) = jobs.get(i) else { break };
                 let (a, b) = pairs[p];
-                let rec = play_game(&bots[a], &bots[b], a_red, seed, &args, p);
+                let rec = play_game(&bots[a], &bots[b], a_red, seed, &openings[(seed - 1000) as usize], &args, p);
                 records.lock().unwrap().push(rec);
             });
         }

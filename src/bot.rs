@@ -2,6 +2,7 @@
 //! et table de transposition (optionnellement modulo les 8 symétries du plateau).
 
 use crate::features::LinearEval;
+use crate::nnue::{Accumulator, Nnue};
 use crate::game::{Game, Move, Status, INV_SYM, LINES, RED, YELLOW};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -46,6 +47,16 @@ pub fn evaluate(g: &Game, p: &EvalParams) -> i32 {
     if g.player == RED { score } else { -score }
 }
 
+/// Évaluation statique selon les réglages : réseau s'il y en a un, sinon linéaire apprise, sinon classique.
+#[inline]
+fn static_eval(g: &Game, nnue: Option<&Nnue>, linear: Option<&LinearEval>, p: &EvalParams) -> i32 {
+    match (nnue, linear) {
+        (Some(n), _) => n.eval(g),
+        (None, Some(l)) => l.eval(g),
+        (None, None) => evaluate(g, p),
+    }
+}
+
 /// Nombre de demi-coups restant avant la fin forcée de la partie.
 #[inline]
 fn plies_left(g: &Game) -> u32 {
@@ -61,6 +72,13 @@ pub enum TtMode {
     /// Table indexée par la clé canonique : les 8 positions symétriques partagent une entrée.
     Symmetric,
 }
+
+/// Profondeur maximale depuis la racine (une partie dure au plus 2 × 10 demi-coups).
+const MAX_PLY: usize = 64;
+
+/// Priorités de tri, au-dessus de toute évaluation.
+const ORDER_TT: i32 = i32::MAX;
+const ORDER_KILLER: i32 = WIN_BOUND - 1;
 
 const EXACT: u8 = 0;
 const LOWER: u8 = 1; // score >= valeur stockée
@@ -144,7 +162,18 @@ pub struct Bot {
     pub eval: EvalParams,
     /// Évaluation apprise ; si présente, remplace `eval`.
     pub linear: Option<Arc<LinearEval>>,
+    /// Réseau NNUE ; si présent, remplace les deux autres évaluations.
+    pub nnue: Option<Arc<Nnue>>,
+    /// Trier les coups des nœuds intérieurs (gain immédiat, coup mémorisé, coups « killer »,
+    /// puis évaluation de la position obtenue, apprise si chargée).
+    pub ordering: bool,
+    /// Recherche à fenêtre nulle (PVS) pour les coups après le premier.
+    pub pvs: bool,
     tt: Tt,
+    /// Par demi-coup depuis la racine : deux coups ayant récemment provoqué une coupure.
+    killers: Vec<[Move; 2]>,
+    /// Par demi-coup depuis la racine : coups à trier (réutilisés, pas d'allocation en recherche).
+    move_bufs: Vec<Vec<(Move, i32)>>,
     nodes: u64,
     tt_hits: u64,
     deadline: Instant,
@@ -159,7 +188,7 @@ impl Bot {
 
     pub fn with_tt(time_limit: Duration, max_depth: u32, tt_mode: TtMode, tt_mb: usize) -> Bot {
         let tt = Tt::new(if tt_mode == TtMode::Off { 0 } else { tt_mb });
-        Bot { time_limit, max_depth, tt_mode, tt_min_depth: 1, use_tt_move: true, iterative_solve: true, eval: EvalParams::default(), linear: None, tt, nodes: 0, tt_hits: 0, deadline: Instant::now(), stopped: false }
+        Bot { time_limit, max_depth, tt_mode, tt_min_depth: 1, use_tt_move: true, iterative_solve: true, eval: EvalParams::default(), linear: None, nnue: None, ordering: true, pvs: true, tt, killers: vec![[Move(0); 2]; MAX_PLY], move_bufs: vec![Vec::new(); MAX_PLY], nodes: 0, tt_hits: 0, deadline: Instant::now(), stopped: false }
     }
 
     /// Clé de table et symétrie menant au repère dans lequel les coups sont stockés.
@@ -195,10 +224,7 @@ impl Bot {
         // permet aussi de réutiliser une position résolue quelle que soit la profondeur demandée.
         let depth = depth.min(plies_left(g));
         if depth == 0 {
-            return match &self.linear {
-                Some(l) => l.eval(g),
-                None => evaluate(g, &self.eval),
-            };
+            return static_eval(g, self.nnue.as_deref(), self.linear.as_deref(), &self.eval);
         }
 
         let use_tt = self.tt_mode != TtMode::Off && depth >= self.tt_min_depth;
@@ -229,11 +255,36 @@ impl Bot {
 
         let mut best = -INF;
         let mut best_move = Move(0);
-        let mut visit = |this: &mut Self, m: Move, child: &Game, alpha: &mut i32| {
+        // PVS : au-delà du premier coup, on vérifie d'abord avec une fenêtre nulle que le coup ne fait
+        // pas mieux qu'alpha. Inutile si les enfants sont des feuilles (l'évaluation ignore la fenêtre).
+        let pvs = self.pvs && depth >= 2;
+        let mut first = true;
+        // Avec un réseau : accumulateur tenu à jour pendant la génération des coups, pour évaluer
+        // chaque enfant sans tout recalculer (feuilles et tri).
+        let net = self.nnue.clone();
+        let mut acc = net.as_deref().map(|n| Accumulator::new(n, g));
+        let mut visit = |this: &mut Self, m: Move, child: &Game, alpha: &mut i32, leaf: Option<&Accumulator>| {
             let score = match Self::terminal_score(child, ply + 1) {
                 Some(s) => s,
+                // Enfant feuille évalué par l'accumulateur (équivaut à `negamax(child, 0)`).
+                None if depth == 1 && leaf.is_some() => {
+                    this.nodes += 1;
+                    if this.nodes & 1023 == 0 && Instant::now() >= this.deadline {
+                        this.stopped = true;
+                    }
+                    -leaf.unwrap().eval(child.player)
+                }
+                None if pvs && !first => {
+                    let s = -this.negamax(child, depth - 1, -*alpha - 1, -*alpha, ply + 1);
+                    if s > *alpha && s < beta && !this.stopped {
+                        -this.negamax(child, depth - 1, -beta, -*alpha, ply + 1)
+                    } else {
+                        s
+                    }
+                }
                 None => -this.negamax(child, depth - 1, -beta, -*alpha, ply + 1),
             };
+            first = false;
             if score > best {
                 best = score;
                 best_move = m;
@@ -243,13 +294,63 @@ impl Bot {
             }
             *alpha < beta && !this.stopped
         };
-        // Le coup mémorisé d'abord : s'il provoque une coupure, on évite de générer les autres.
-        let mut go_on = true;
-        if let Some(tm) = tt_move {
-            go_on = visit(self, tm, &g.play(tm), &mut alpha);
+        if self.ordering && depth >= 2 {
+            // Nœud intérieur : les enfants sont eux-mêmes cherchés, un bon ordre paie largement
+            // le coût du tri. On génère, note et trie les coups, puis on rejoue chacun.
+            let mut buf = std::mem::take(&mut self.move_bufs[ply as usize]);
+            buf.clear();
+            let killers = self.killers[ply as usize];
+            let mut win = None;
+            let params = self.eval;
+            let (nnue, linear) = (self.nnue.as_deref(), self.linear.as_deref());
+            g.for_each_child_obs(&mut acc, |m, c, a| {
+                let order = match Self::terminal_score(c, ply + 1) {
+                    Some(s) if s > 0 => {
+                        win = Some((m, s));
+                        return false; // aucun coup ne peut faire mieux qu'un gain immédiat
+                    }
+                    Some(s) => s,
+                    None if Some(m) == tt_move => ORDER_TT,
+                    None if m == killers[0] || m == killers[1] => ORDER_KILLER,
+                    None => -match a {
+                        Some(a) => a.eval(c.player),
+                        None => static_eval(c, nnue, linear, &params),
+                    },
+                };
+                buf.push((m, order));
+                true
+            });
+            if let Some((m, s)) = win {
+                self.move_bufs[ply as usize] = buf;
+                if use_tt {
+                    self.tt.store(key, depth as u8, score_to_tt(s, ply), EXACT, m.transform(sym));
+                }
+                return s;
+            }
+            buf.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+            for &(m, _) in &buf {
+                if !visit(self, m, &g.play(m), &mut alpha, None) {
+                    break;
+                }
+            }
+            self.move_bufs[ply as usize] = buf;
+        } else {
+            // Le coup mémorisé d'abord : s'il provoque une coupure, on évite de générer les autres.
+            let mut go_on = true;
+            if let Some(tm) = tt_move {
+                go_on = visit(self, tm, &g.play(tm), &mut alpha, None);
+            }
+            if go_on {
+                g.for_each_child_obs(&mut acc, |m, child, a| Some(m) == tt_move || visit(self, m, child, &mut alpha, a.as_ref()));
+            }
         }
-        if go_on {
-            g.for_each_child(|m, child| Some(m) == tt_move || visit(self, m, child, &mut alpha));
+        // Coup « killer » : il a réfuté cette position, il réfutera sans doute ses voisines.
+        if best >= beta && !self.stopped && best_move != Move(0) {
+            let k = &mut self.killers[ply as usize];
+            if k[0] != best_move {
+                k[1] = k[0];
+                k[0] = best_move;
+            }
         }
 
         if use_tt && !self.stopped {
@@ -270,6 +371,7 @@ impl Bot {
         let start = Instant::now();
         self.deadline = start + self.time_limit;
         self.stopped = false;
+        self.killers.fill([Move(0); 2]);
         self.nodes = 0;
         self.tt_hits = 0;
 
@@ -314,6 +416,11 @@ impl Bot {
             for entry in root.iter_mut() {
                 let score = match Self::terminal_score(&entry.1, 1) {
                     Some(s) => s,
+                    // PVS à la racine : les coups suivants sont d'abord testés en fenêtre nulle.
+                    None if self.pvs && depth >= 2 && alpha > -INF => {
+                        let s = -self.negamax(&entry.1, depth - 1, -alpha - 1, -alpha, 1);
+                        if s > alpha && !self.stopped { -self.negamax(&entry.1, depth - 1, -INF, -alpha, 1) } else { s }
+                    }
                     None => -self.negamax(&entry.1, depth - 1, -INF, -alpha, 1),
                 };
                 if self.stopped {
@@ -365,6 +472,7 @@ impl Bot {
     pub fn solve_within(&mut self, g: &Game, limit: Duration) -> Option<i32> {
         self.deadline = Instant::now().checked_add(limit).unwrap_or_else(|| Instant::now() + Duration::from_secs(86_400 * 365));
         self.stopped = false;
+        self.killers.fill([Move(0); 2]);
         self.nodes = 0;
         self.tt_hits = 0;
         let full = plies_left(g);
@@ -437,6 +545,36 @@ mod tests {
                 .collect();
             assert_eq!(values[0], values[1]);
             assert_eq!(values[0], values[2]);
+        }
+    }
+
+    /// Le tri des coups et la PVS ne changent que l'ordre de visite, jamais la valeur exacte.
+    #[test]
+    fn ordering_and_pvs_keep_solved_values() {
+        let mut rng = 0xC0FFEEu64;
+        for _ in 0..20 {
+            let mut g = Game::with_stones(10);
+            for _ in 0..15 {
+                let moves = g.legal_moves();
+                rng ^= rng << 13;
+                rng ^= rng >> 7;
+                rng ^= rng << 17;
+                let next = g.play(moves[(rng % moves.len() as u64) as usize]);
+                if next.status() != Status::Ongoing {
+                    break;
+                }
+                g = next;
+            }
+            let values: Vec<i32> = [(false, false), (true, false), (false, true), (true, true)]
+                .iter()
+                .map(|&(ordering, pvs)| {
+                    let mut b = Bot::with_tt(Duration::from_secs(60), 64, TtMode::Symmetric, 16);
+                    b.ordering = ordering;
+                    b.pvs = pvs;
+                    b.solve(&g)
+                })
+                .collect();
+            assert!(values.iter().all(|&v| v == values[0]), "{values:?}");
         }
     }
 }
