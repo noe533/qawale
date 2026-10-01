@@ -11,8 +11,14 @@
 //!   --n N           nombre de positions, prises à intervalle régulier dans le fichier (défaut 300)
 //!   --min-left K    ignore les positions à moins de K demi-coups de la fin (défaut 4)
 //!   --threads T     (défaut : moitié des cœurs logiques)
+//!   --perft K       compte aussi N, la taille de l'arbre complet (minimax sans coupure) à la profondeur du
+//!                   1er bot, sur les K premières positions, et compare les nœuds de chaque bot à √N
+//!                   (avec un ordre parfait, l'alpha-bêta visite ~ b^⌈d/2⌉ + b^⌊d/2⌋ feuilles, soit ~ √N)
+//!
+//! Qualité du tri, par profondeur restante : part des coupures obtenues dès le 1er coup essayé et rang
+//! moyen du coup qui coupe (les bons moteurs d'échecs dépassent 90 % au 1er coup).
 
-use qawale::game::Game;
+use qawale::game::{Game, Status};
 use qawale::player::{BotSpec, SearchInfo};
 use std::io::{BufRead, BufReader};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -31,6 +37,19 @@ fn parse_row(line: &str) -> Option<Game> {
         }
     }
     Some(Game::from_stacks(&stacks, [f[3].parse().ok()?, f[4].parse().ok()?], f[2].parse().ok()?))
+}
+
+/// Nombre de feuilles de l'arbre minimax complet à `depth` demi-coups (fins de partie comprises).
+fn perft(g: &Game, depth: u32) -> u64 {
+    if depth == 0 || g.reserve[0] + g.reserve[1] == 0 {
+        return 1;
+    }
+    let mut n = 0;
+    g.for_each_child(|_, c| {
+        n += if c.status() == Status::Ongoing { perft(c, depth - 1) } else { 1 };
+        true
+    });
+    n
 }
 
 fn main() {
@@ -58,6 +77,36 @@ fn main() {
     let step = (all.len() / n).max(1);
     let positions: Vec<Game> = all.iter().step_by(step).take(n).copied().collect();
     println!("{} positions (sur {}), {threads} threads\n", positions.len(), all.len());
+
+    // Taille de l'arbre complet, pour comparer à √N.
+    let perft_n: usize = get("--perft").map(|v| v.parse().unwrap()).unwrap_or(0).min(positions.len());
+    let mut tree: Vec<u64> = Vec::new();
+    if perft_n > 0 {
+        let d = bots[0].depth.expect("--perft : le 1er bot doit avoir une profondeur fixe (prof=)");
+        let t0 = Instant::now();
+        let next = AtomicUsize::new(0);
+        let out = Mutex::new(vec![0u64; perft_n]);
+        std::thread::scope(|s| {
+            for _ in 0..threads {
+                s.spawn(|| loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    if i >= perft_n {
+                        break;
+                    }
+                    let n = perft(&positions[i], d);
+                    out.lock().unwrap()[i] = n;
+                });
+            }
+        });
+        tree = out.into_inner().unwrap();
+        let sum_sqrt: f64 = tree.iter().map(|&n| (n as f64).sqrt()).sum();
+        println!(
+            "Arbre complet à prof. {d} sur {perft_n} positions : N moyen {:.3e}, √N moyen {:.0} ({:.1} s)\n",
+            tree.iter().sum::<u64>() as f64 / perft_n as f64,
+            sum_sqrt / perft_n as f64,
+            t0.elapsed().as_secs_f64()
+        );
+    }
 
     let mut reference: Option<Vec<(String, SearchInfo)>> = None;
     for spec in &bots {
@@ -108,5 +157,41 @@ fn main() {
             }
         }
         println!("{line}");
+        // Qualité du tri par profondeur restante.
+        let mut cuts = [[0u64; 4]; 8];
+        for r in &res {
+            for (c, x) in cuts.iter_mut().zip(&r.1.cuts) {
+                for k in 0..4 {
+                    c[k] += x[k];
+                }
+            }
+        }
+        if cuts[0][0] > 0 {
+            println!("    killers du dernier étage : {} essayés, {:.1} % ont coupé", cuts[0][0], 100.0 * cuts[0][1] as f64 / cuts[0][0] as f64);
+        }
+        for (d, c) in cuts.iter().enumerate().rev() {
+            if d > 0 && c[0] > 0 {
+                println!(
+                    "    prof. restante {d}{} : {:>10} nœuds intérieurs, coupures {:>5.1} %, dont au 1er coup {:>5.1} %, rang moyen {:>5.2}",
+                    if d == 7 { "+" } else { "" },
+                    c[0],
+                    100.0 * c[1] as f64 / c[0] as f64,
+                    100.0 * c[2] as f64 / c[1].max(1) as f64,
+                    c[3] as f64 / c[1].max(1) as f64
+                );
+            }
+        }
+        if !tree.is_empty() {
+            let nodes: u64 = res[..tree.len()].iter().map(|r| r.1.nodes).sum();
+            let sqrt_sum: f64 = tree.iter().map(|&n| (n as f64).sqrt()).sum();
+            let n_sum: u64 = tree.iter().sum();
+            println!(
+                "    sur les {} premières positions : {:.0} nœuds/position = {:.2} × √N  ({:.4} % de N)",
+                tree.len(),
+                nodes as f64 / tree.len() as f64,
+                nodes as f64 / sqrt_sum,
+                100.0 * nodes as f64 / n_sum as f64
+            );
+        }
     }
 }

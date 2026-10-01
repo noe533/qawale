@@ -1,17 +1,17 @@
 # Qawale — journal de recherche
 
 Journal des résultats, idées et décisions. À tenir à jour à chaque session.
-Dernière mise à jour : 2026-10-01.
+Dernière mise à jour : 2026-10-02.
 
 ## ▶ Reprise rapide (à lire en premier dans une nouvelle session)
-**Où on en est (2026-10-01)** : on cherche une meilleure fonction d'évaluation, à 10 galets par joueur (variante retenue :
-plus décisive que 8). L'évaluation linéaire apprise `data/eval_it1k.txt` juge mieux que la classique
-(+58 Elo à prof. 2, +78 à prof. 3, à profondeur fixe) mais coûte ~240 ns/éval contre ~50 ns ⇒ perd légèrement au temps.
-**Mise à jour 2026-10-01 (revue + tri des coups)** : tri des coups + killers + PVS ⇒ 4 à 9× moins de nœuds,
-même valeurs ; **nouvelle recherche classique +141 Elo** contre l'ancienne à 100 ms. Mais l'écart de vitesse se creuse :
-**classique bat appris (it02) de +75 Elo à 100 ms** (prof. moyenne 3,2 contre 2,8). Voir « Tri des coups » plus bas.
-**Prochaine étape** : (1) vitesse de `features_with` (~170 ns avec `native`) : atteinte incrémentale par case dans `Game`,
-évaluation paresseuse ; (2) réductions des coups tardifs (LMR), à juger par tournoi ; (3) prolongations sur menaces.
+**Où on en est (2026-10-02)** : 10 galets par joueur (variante retenue). **Meilleur bot : `nnue=weights/nnue_h64.bin`**
+(réseau NNUE quantifié, sections « NNUE » plus bas) : **+218 Elo contre l'évaluation classique à 100 ms**. Recherche :
+alpha-bêta + table (symétries) + tri des coups (évaluation des filles) + killers + PVS ; au dernier étage (enfants = feuilles,
+non triés) killers + historique par case de départ (+29 Elo). README.md = présentation pour un nouveau venu.
+**Prochaine étape** : (1) lancer la boucle NNUE `train/nnue_loop.py` (nuit) ; (2) politique apprise sur la case de départ
+pour le dernier étage (encore 15 × √N nœuds, rang moyen ~20 du coup qui coupe) ; (3) LMR ; (4) réseau par phase de jeu,
+réseau plus grand une fois plus de données.
+Historique : l'évaluation linéaire (`features.rs`) jugeait mieux que la classique mais restait trop lente au temps.
 
 **Boucle de nuit (tournée le 2026-10-01, 13 itérations)** : `.venv/Scripts/python.exe train/night_loop.py --stop-at 08:30`.
 Résultat : gain seulement à la 1re itération (it01 +45 Elo contre it1k à prof. 3), puis plus rien : le linéaire plafonne.
@@ -310,3 +310,22 @@ qu'elles font < 500 k positions (dès l'itération 4 : uniquement ses propres é
 - Coût mesuré (gen_data, 20 threads) : prof. 3 ≈ 85 s cumulées / 200 parties ; prof. 4 ≈ 15 s réelles / 100 parties
   ⇒ ~25-40 min de génération pour 10 000 parties, + ~2 min d'entraînement + ~5 min de matchs ⇒ ~8-12 itérations par nuit (extrapolé).
 - Test à blanc (1 itération, 100 parties) : toutes les étapes s'enchaînent.
+
+## Qualité du tri et dernier étage (2026-10-02)
+`search_bench` affiche maintenant, par profondeur restante, la part des coupures obtenues au 1er coup et le rang moyen
+du coup qui coupe ; `--perft K` compte N (arbre complet) et compare les nœuds à √N (ordre parfait ≈ √N, Knuth-Moore).
+- Arbre complet à prof. 3 : N ≈ 2,3e7 en moyenne ⇒ **~280 coups par demi-coup** (et non ~100) ; perft prof. 4 ≈ 6e9
+  feuilles/position : impraticable (plusieurs minutes par position).
+- Constat (NNUE, prof. 3) : nœuds triés (prof. restante 2) 71 % au 1er coup, rang moyen 2,5 ; **dernier étage (prof. restante 1,
+  enfants = feuilles, non triés : trier = tout évaluer) : 18 % au 1er coup, rang moyen 36**, et 7 à 9× plus de ces nœuds ;
+  au total 22 × √N.
+- Ajouté au dernier étage : coups killers essayés juste après le coup mémorisé (`killer1=`, ~40 % coupent) et cases de départ
+  dans l'ordre d'un historique (case du coup coupant, pondérée par prof.², `histo=`) via `Game::for_each_child_ordered_obs`.
+  Valeurs identiques partout. Prof. 3 : nœuds ×0,72, rang 36 → 21, 22 → 15 × √N. Prof. 4 : NNUE ×0,70 (rang 15 → 9),
+  classique ×0,50 (rang 33 → 13). Temps, 1 thread, prof. 3 : 0,82 → 0,68-0,75 s.
+- **Tournoi 100 ms, 500 parties : avec contre sans = +29 Elo (+7 à +52)** (`data/nnue/tri_dernier_etage.txt`).
+- ⚠ Mesures de temps : à 10 threads, `search_bench` est très bruité (×2 à ×3 d'un passage à l'autre) ; à 1 thread
+  c'est reproductible à quelques % près, mais le portable ralentit après quelques secondes de calcul : un même bot passé
+  en 4e position a mis 1,2-1,3 s contre 0,7 s en 2e. Comparer les nœuds, et pour le temps, 1 thread en alternant l'ordre.
+- Pistes : politique apprise sur la case de départ (tête 2×64 → 16 sur l'accumulateur déjà calculé), ou tri par virage dans
+  le parcours des chemins (le générateur décompose déjà le coup : case puis directions).

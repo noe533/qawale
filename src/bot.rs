@@ -169,13 +169,24 @@ pub struct Bot {
     pub ordering: bool,
     /// Recherche à fenêtre nulle (PVS) pour les coups après le premier.
     pub pvs: bool,
+    /// Au dernier étage (enfants = feuilles, non triés) : essayer les coups killers avant de générer.
+    pub leaf_killers: bool,
+    /// Au dernier étage : générer d'abord les coups des cases de départ qui ont souvent coupé.
+    pub history: bool,
     tt: Tt,
+    /// Historique par joueur au trait et case de départ du coup qui a provoqué une coupure
+    /// (pondéré par profondeur²), remis à zéro à chaque recherche.
+    hist: [[u32; 16]; 2],
     /// Par demi-coup depuis la racine : deux coups ayant récemment provoqué une coupure.
     killers: Vec<[Move; 2]>,
     /// Par demi-coup depuis la racine : coups à trier (réutilisés, pas d'allocation en recherche).
     move_bufs: Vec<Vec<(Move, i32)>>,
     nodes: u64,
     tt_hits: u64,
+    /// Qualité du tri, par profondeur restante (indice min(prof., 7)) :
+    /// [nœuds intérieurs, coupures bêta, coupures dès le 1er coup essayé, somme des rangs du coup coupant].
+    /// (Les coupures directes par la table, avant tout coup, ne sont pas comptées.)
+    pub cut_stats: [[u64; 4]; 8],
     deadline: Instant,
     stopped: bool,
 }
@@ -188,7 +199,7 @@ impl Bot {
 
     pub fn with_tt(time_limit: Duration, max_depth: u32, tt_mode: TtMode, tt_mb: usize) -> Bot {
         let tt = Tt::new(if tt_mode == TtMode::Off { 0 } else { tt_mb });
-        Bot { time_limit, max_depth, tt_mode, tt_min_depth: 1, use_tt_move: true, iterative_solve: true, eval: EvalParams::default(), linear: None, nnue: None, ordering: true, pvs: true, tt, killers: vec![[Move(0); 2]; MAX_PLY], move_bufs: vec![Vec::new(); MAX_PLY], nodes: 0, tt_hits: 0, deadline: Instant::now(), stopped: false }
+        Bot { time_limit, max_depth, tt_mode, tt_min_depth: 1, use_tt_move: true, iterative_solve: true, eval: EvalParams::default(), linear: None, nnue: None, ordering: true, pvs: true, leaf_killers: true, history: true, tt, hist: [[0; 16]; 2], killers: vec![[Move(0); 2]; MAX_PLY], move_bufs: vec![Vec::new(); MAX_PLY], nodes: 0, tt_hits: 0, cut_stats: [[0; 4]; 8], deadline: Instant::now(), stopped: false }
     }
 
     /// Clé de table et symétrie menant au repère dans lequel les coups sont stockés.
@@ -263,7 +274,9 @@ impl Bot {
         // chaque enfant sans tout recalculer (feuilles et tri).
         let net = self.nnue.clone();
         let mut acc = net.as_deref().map(|n| Accumulator::new(n, g));
+        let mut count = 0u64; // coups essayés (rang du coup qui provoque une coupure)
         let mut visit = |this: &mut Self, m: Move, child: &Game, alpha: &mut i32, leaf: Option<&Accumulator>| {
+            count += 1;
             let score = match Self::terminal_score(child, ply + 1) {
                 Some(s) => s,
                 // Enfant feuille évalué par l'accumulateur (équivaut à `negamax(child, 0)`).
@@ -322,6 +335,12 @@ impl Bot {
             });
             if let Some((m, s)) = win {
                 self.move_bufs[ply as usize] = buf;
+                // Gain immédiat trouvé pendant la génération : compté comme coupure au 1er coup.
+                let st = &mut self.cut_stats[(depth as usize).min(7)];
+                st[0] += 1;
+                st[1] += 1;
+                st[2] += 1;
+                st[3] += 1;
                 if use_tt {
                     self.tt.store(key, depth as u8, score_to_tt(s, ply), EXACT, m.transform(sym));
                 }
@@ -335,17 +354,65 @@ impl Bot {
             }
             self.move_bufs[ply as usize] = buf;
         } else {
-            // Le coup mémorisé d'abord : s'il provoque une coupure, on évite de générer les autres.
+            // Dernier étage (enfants = feuilles) : trier coûterait autant que tout évaluer. On essaie
+            // d'abord des coups devinés sans évaluation : le coup mémorisé, puis les killers ; s'ils
+            // provoquent une coupure, on évite de générer les autres.
+            let mut tried = [Move(0); 3]; // Move(0) n'est jamais un coup légal (longueur 0)
             let mut go_on = true;
             if let Some(tm) = tt_move {
+                tried[0] = tm;
                 go_on = visit(self, tm, &g.play(tm), &mut alpha, None);
             }
+            if self.leaf_killers {
+                for (i, k) in self.killers[ply as usize].into_iter().enumerate() {
+                    if go_on && k != Move(0) && !tried.contains(&k) && g.check_move(k).is_ok() {
+                        tried[1 + i] = k;
+                        go_on = visit(self, k, &g.play(k), &mut alpha, None);
+                        self.cut_stats[0][0] += 1; // [0] inutilisé ailleurs : killers essayés / ayant coupé
+                        self.cut_stats[0][1] += !go_on as u64;
+                    }
+                }
+            }
             if go_on {
-                g.for_each_child_obs(&mut acc, |m, child, a| Some(m) == tt_move || visit(self, m, child, &mut alpha, a.as_ref()));
+                // Cases de départ dans l'ordre de l'historique : d'abord celles qui ont souvent coupé.
+                let use_history = self.history;
+                let (mut sqs, mut n) = ([0u8; 16], 0);
+                if use_history {
+                    let hist = &self.hist[g.player as usize];
+                    let mut occ = g.occupied();
+                    while occ != 0 {
+                        let sq = occ.trailing_zeros() as u8;
+                        occ &= occ - 1;
+                        let mut j = n;
+                        while j > 0 && hist[sqs[j - 1] as usize] < hist[sq as usize] {
+                            sqs[j] = sqs[j - 1];
+                            j -= 1;
+                        }
+                        sqs[j] = sq;
+                        n += 1;
+                    }
+                }
+                let mut rest = |m: Move, child: &Game, a: &Option<Accumulator>| tried.contains(&m) || visit(self, m, child, &mut alpha, a.as_ref());
+                if use_history {
+                    g.for_each_child_ordered_obs(&sqs[..n], &mut acc, &mut rest);
+                } else {
+                    g.for_each_child_obs(&mut acc, &mut rest);
+                }
+            }
+        }
+        if !self.stopped {
+            let st = &mut self.cut_stats[(depth as usize).min(7)];
+            st[0] += 1;
+            if best >= beta {
+                st[1] += 1;
+                st[2] += (count == 1) as u64;
+                st[3] += count;
             }
         }
         // Coup « killer » : il a réfuté cette position, il réfutera sans doute ses voisines.
+        // Historique : la case de départ du coup qui coupe, pondérée par la profondeur.
         if best >= beta && !self.stopped && best_move != Move(0) {
+            self.hist[g.player as usize][best_move.square() as usize] += depth * depth;
             let k = &mut self.killers[ply as usize];
             if k[0] != best_move {
                 k[1] = k[0];
@@ -374,6 +441,8 @@ impl Bot {
         self.killers.fill([Move(0); 2]);
         self.nodes = 0;
         self.tt_hits = 0;
+        self.cut_stats = [[0; 4]; 8];
+        self.hist = [[0; 16]; 2];
 
         // Coups racine, dédoublonnés par position résultante (à symétrie près si activé).
         let mut seen = HashSet::new();
@@ -473,6 +542,7 @@ impl Bot {
         self.deadline = Instant::now().checked_add(limit).unwrap_or_else(|| Instant::now() + Duration::from_secs(86_400 * 365));
         self.stopped = false;
         self.killers.fill([Move(0); 2]);
+        self.hist = [[0; 16]; 2];
         self.nodes = 0;
         self.tt_hits = 0;
         let full = plies_left(g);

@@ -492,24 +492,51 @@ impl Game {
         while occ != 0 {
             let sq = occ.trailing_zeros() as usize;
             occ &= occ - 1;
-            let h = self.heights[sq];
-            for i in 0..h {
-                obs.stone(sq, i, self.stone(sq, i), false);
-            }
-            let top = self.stone(sq, h - 1);
-            obs.top(sq, top, false);
-            let mut g = *self;
-            let (stack, len) = g.place_and_lift(sq);
-            let cont = walk(&mut g, sq, NONE, stack, len, Move::new(sq as u8), obs, &mut f);
-            for i in 0..h {
-                obs.stone(sq, i, self.stone(sq, i), true);
-            }
-            obs.top(sq, top, true);
-            if !cont {
+            if !self.children_from(sq, obs, &mut f) {
                 return false;
             }
         }
         true
+    }
+
+    /// Comme `for_each_child_obs`, mais en prenant les cases de départ dans l'ordre de `squares`
+    /// (qui doit contenir chaque case occupée exactement une fois) : pour essayer d'abord les coups
+    /// partant des cases les plus prometteuses.
+    pub fn for_each_child_ordered_obs<O: StoneObserver, F: FnMut(Move, &Game, &O) -> bool>(
+        &self,
+        squares: &[u8],
+        obs: &mut O,
+        mut f: F,
+    ) -> bool {
+        if self.reserve[self.player as usize] == 0 {
+            return true;
+        }
+        for &sq in squares {
+            debug_assert!(self.heights[sq as usize] > 0);
+            if !self.children_from(sq as usize, obs, &mut f) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Tous les coups partant de la case `sq` (occupée).
+    #[inline]
+    fn children_from<O: StoneObserver, F: FnMut(Move, &Game, &O) -> bool>(&self, sq: usize, obs: &mut O, f: &mut F) -> bool {
+        let h = self.heights[sq];
+        for i in 0..h {
+            obs.stone(sq, i, self.stone(sq, i), false);
+        }
+        let top = self.stone(sq, h - 1);
+        obs.top(sq, top, false);
+        let mut g = *self;
+        let (stack, len) = g.place_and_lift(sq);
+        let cont = walk(&mut g, sq, NONE, stack, len, Move::new(sq as u8), obs, f);
+        for i in 0..h {
+            obs.stone(sq, i, self.stone(sq, i), true);
+        }
+        obs.top(sq, top, true);
+        cont
     }
 
     pub fn legal_moves(&self) -> Vec<Move> {
