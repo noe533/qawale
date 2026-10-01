@@ -35,6 +35,7 @@
 //!   search_score  score de cette recherche pour le joueur au trait (±1000000 − distance = gain/perte forcés)
 //!   exact         valeur exacte pour le joueur au trait : 1, 0, -1 (vide si non calculée ou abandonnée)
 //!   exact_score   score exact (distance à la victoire comprise)
+//!   best_move     meilleur coup de l'étiquette recherche, ex. « a1 hhd » (vide si aucune) : pour apprendre une politique
 
 use qawale::bot::{Bot, TtMode, WIN};
 use qawale::features::LinearEval;
@@ -290,7 +291,7 @@ fn run_game(idx: usize, args: &Args, labeler: &mut Bot, t: &mut Timings) -> Vec<
             Some(_) => -1,
             None => 0,
         };
-        let (mut sd, mut ss) = (String::new(), String::new());
+        let (mut sd, mut ss, mut best) = (String::new(), String::new(), String::new());
         if args.label_depth > 0 {
             let t1 = Instant::now();
             labeler.max_depth = args.label_depth;
@@ -301,6 +302,7 @@ fn run_game(idx: usize, args: &Args, labeler: &mut Bot, t: &mut Timings) -> Vec<
             if r.depth > 0 {
                 sd = r.depth.to_string();
                 ss = r.score.to_string();
+                best = r.best.to_string();
             }
         }
         let (mut ex, mut exs) = (String::new(), String::new());
@@ -317,7 +319,7 @@ fn run_game(idx: usize, args: &Args, labeler: &mut Bot, t: &mut Timings) -> Vec<
         out.push((
             pos.canonical_key(),
             format!(
-                "{idx},{ply},{},{},{},{},{result},{sd},{ss},{ex},{exs}",
+                "{idx},{ply},{},{},{},{},{result},{sd},{ss},{ex},{exs},{best}",
                 pos.player,
                 pos.reserve[0],
                 pos.reserve[1],
@@ -375,7 +377,7 @@ fn main() {
         let mut f = std::fs::File::create(&args.out).unwrap();
         writeln!(
             f,
-            "{HEADER_START}reserve_red,reserve_yellow,{},result,search_depth,search_score,exact,exact_score",
+            "{HEADER_START}reserve_red,reserve_yellow,{},result,search_depth,search_score,exact,exact_score,best_move",
             squares.join(",")
         )
         .unwrap();
