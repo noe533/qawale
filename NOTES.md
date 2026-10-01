@@ -331,3 +331,18 @@ du coup qui coupe ; `--perft K` compte N (arbre complet) et compare les nœuds �
   en 4e position a mis 1,2-1,3 s contre 0,7 s en 2e. Comparer les nœuds, et pour le temps, 1 thread en alternant l'ordre.
 - Pistes : politique apprise sur la case de départ (tête 2×64 → 16 sur l'accumulateur déjà calculé), ou tri par virage dans
   le parcours des chemins (le générateur décompose déjà le coup : case puis directions).
+
+## Résolution complète : faisabilité (2026-10-02, `examples/solve_variants.rs`)
+Depuis la position initiale, table 512 Mo, recherche actuelle (évaluation classique), 1 thread :
+| galets/joueur | demi-coups | valeur | nœuds | temps |
+|---|---|---|---|---|
+| 1 | 2 | nul | 82 | 0 s |
+| 2 | 4 | nul | 1 567 | 0 s |
+| 3 | 6 | nul | 314 k | 0,10 s |
+| 4 | 8 | nul | 60 M | 13,7 s |
+| 5 | 10 | non résolu en 120 s (> 930 M nœuds) | | |
+- ×~200 nœuds et ×~140 en temps par galet de plus (2 demi-coups, soit ~×14 par demi-coup), et le facteur grandit avec
+  la hauteur des piles. Extrapolé : 5 galets ≈ 30-60 min, 6 ≈ quelques jours, 8 ≈ des siècles, 10 ≈ des millions d'années
+  sur ce portable. Depuis le premier bot, tous les progrès (table + coup mémorisé, tri, PVS, killers/historique)
+  représentent ×50 à ×150 sur la résolution exacte, soit ~1,5 à 2 demi-coups ; un ordre parfait n'apporterait
+  au mieux qu'un facteur ~15 de plus (on est à ~15 × √N) ⇒ la règle à 8 ou 10 galets est hors de portée.
