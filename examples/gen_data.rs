@@ -13,6 +13,7 @@
 //!   --epsilon P        probabilité de jouer un coup au hasard ensuite (défaut 0.05)
 //!   --label-depth D    étiquette « recherche » à profondeur D (0 = aucune, défaut 3)
 //!   --label-eval F     évaluation apprise pour l'étiquette recherche (défaut : classique)
+//!   --label-nnue F     réseau NNUE pour l'étiquette recherche (prioritaire sur --label-eval)
 //!   --search-time MS   plafond par recherche ; au-delà, on garde la profondeur atteinte (défaut 2000)
 //!   --exact-plies K    résolution exacte si au plus K demi-coups restent (0 = aucune, défaut 5)
 //!   --exact-time MS    plafond par résolution ; au-delà, étiquette exacte vide (défaut 5000)
@@ -37,6 +38,7 @@
 
 use qawale::bot::{Bot, TtMode, WIN};
 use qawale::features::LinearEval;
+use qawale::nnue::Nnue;
 use qawale::game::{Game, Status};
 use qawale::player::BotSpec;
 use qawale::progress::{fmt_duration, Progress};
@@ -54,6 +56,7 @@ struct Args {
     epsilon: f64,
     label_depth: u32,
     label_eval: Option<std::sync::Arc<LinearEval>>,
+    label_nnue: Option<std::sync::Arc<Nnue>>,
     search_time: Duration,
     exact_plies: u32,
     exact_time: Duration,
@@ -84,6 +87,7 @@ fn parse_args() -> Args {
         epsilon: 0.05,
         label_depth: 3,
         label_eval: None,
+        label_nnue: None,
         search_time: Duration::from_millis(2000),
         exact_plies: 5,
         exact_time: Duration::from_millis(5000),
@@ -113,6 +117,9 @@ fn parse_args() -> Args {
             "--label-depth" => a.label_depth = num(val) as u32,
             "--label-eval" => {
                 a.label_eval = Some(std::sync::Arc::new(LinearEval::load(val).unwrap_or_else(|e| usage(&format!("--label-eval : {e}")))))
+            }
+            "--label-nnue" => {
+                a.label_nnue = Some(std::sync::Arc::new(Nnue::load(val).unwrap_or_else(|e| usage(&format!("--label-nnue : {e}")))))
             }
             "--search-time" => a.search_time = Duration::from_millis(num(val) as u64),
             "--exact-plies" => a.exact_plies = num(val) as u32,
@@ -387,7 +394,7 @@ fn main() {
         args.random_max,
         args.epsilon,
         args.label_depth,
-        if args.label_eval.is_some() { "apprise" } else { "classique" },
+        if args.label_nnue.is_some() { "réseau" } else if args.label_eval.is_some() { "apprise" } else { "classique" },
         args.search_time.as_millis(),
         args.exact_plies,
         args.exact_time.as_millis(),
@@ -410,6 +417,7 @@ fn main() {
             s.spawn(move || {
                 let mut labeler = Bot::with_tt(args.search_time, args.label_depth.max(1), TtMode::Symmetric, 32);
                 labeler.linear = args.label_eval.clone();
+                labeler.nnue = args.label_nnue.clone();
                 loop {
                     let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let Some(&game) = todo.get(i) else { break };

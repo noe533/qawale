@@ -291,3 +291,22 @@ Chaîne : `export_nnue data/loop/itXX ...` (→ `nnue_x.npy`, entrées vues par 
   ⇒ **première évaluation apprise qui bat la classique au temps.** Meilleur bot actuel : `nnue=data/nnue_h64.bin`.
 - Suites : (1) vitesse : poids et accumulateurs en i16, couche 2 en i8 (u8×i8 madd, 4× plus de calculs par instruction) ;
   accumulateur sans allocation ; (2) nouvelle boucle d'amélioration étiquetée par le NNUE ; (3) H plus grand une fois rapide.
+- **Quantification (2026-10-01)** : accumulateur i16 (échelle 127 × 2^k la plus fine sans débordement), activations u8
+  0-127, couche 2 en i8 avec échelle par neurone (AVX2 maddubs + madd), couche 3 en f32 ; tableaux fixes (sans allocation).
+  Incrémental = calcul complet exactement (entiers). Écart avec f32 (nnue_check) : H=64 moyen 5 points, max 46 ;
+  H=128 moyen 6,7, max 81 (une échelle commune pour la couche 2 donnait max 109).
+  Par enfant : H=64 251 → **129 ns**, H=128 389 → 181 ns (génération seule 33 ns).
+- **Temps égal 100 ms quantifié, 500 parties/paire (`data/nnue/temps_100ms_quant.txt`, 3 min 35)** :
+  NNUE H=64 bat classique **+218** (+193 à +244) ; H=128 bat classique +184 ; H=64 bat H=128 +33 (+12 à +54).
+  Prof. moyenne : classique 3,2, H=64 3,1 (185 k nœuds/coup), H=128 2,9. ⇒ meilleur bot : `nnue=weights/nnue_h64.bin`.
+
+## Boucle NNUE `train/nnue_loop.py` (installée le 2026-10-01, pas encore lancée)
+Commande : `.venv/Scripts/python.exe train/nnue_loop.py --stop-at 08:30` (dossier `data/nnue_loop/`, reprise automatique,
+arrêt propre : fichier `data/nnue_loop/STOP`). Itération : 10 000 parties jouées par `full prof=2 nnue=CHAMPION`,
+étiquettes = recherche **prof. 4** avec le champion (`gen_data --label-nnue`) + exacte ≤ 4 restants → export_features +
+export_nnue → `train_nnue.py` (H=64, 40 époques) sur les 6 dernières itérations, complétées par l'ancienne boucle tant
+qu'elles font < 500 k positions (dès l'itération 4 : uniquement ses propres étiquettes) → matchs à 100 ms : contre le champion
+(800 parties, promotion si **borne basse > 0**), contre la classique et le départ (400). Résultats : `data/nnue_loop/results.md`.
+- Coût mesuré (gen_data, 20 threads) : prof. 3 ≈ 85 s cumulées / 200 parties ; prof. 4 ≈ 15 s réelles / 100 parties
+  ⇒ ~25-40 min de génération pour 10 000 parties, + ~2 min d'entraînement + ~5 min de matchs ⇒ ~8-12 itérations par nuit (extrapolé).
+- Test à blanc (1 itération, 100 parties) : toutes les étapes s'enchaînent.
