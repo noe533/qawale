@@ -1,0 +1,27 @@
+# Évaluation linéaire apprise (train/train_eval.py, lam=0.8, 136976 positions)
+# nom  poids_début  poids_fin   (score = scale * somme ; tanh(score/scale) ≈ issue attendue)
+scale 1000
+total_plies 20
+bias -0.030846 0.150820
+me_tops 0.082929 0.049652
+me_line1 -0.022369 0.007115
+me_line2 -0.054145 0.190742
+me_line3 0.671392 0.564305
+me_line3_blocked 0.639248 0.716932
+me_buried1 0.043669 -0.020364
+me_buried2 0.026329 0.005115
+me_buried3p 0.082506 0.069249
+me_tall_top 0.005167 0.050481
+me_reach3 0.666020 0.691616
+me_reach2 0.031660 -0.040374
+opp_tops -0.052904 -0.024575
+opp_line1 0.007588 0.001226
+opp_line2 -0.030900 -0.019735
+opp_line3 -0.066982 -0.079766
+opp_line3_blocked -0.062839 -0.099506
+opp_buried1 -0.038978 0.001110
+opp_buried2 -0.040971 -0.025962
+opp_buried3p 0.018238 -0.036936
+opp_tall_top -0.002177 -0.016836
+opp_reach3 0.078095 0.078256
+opp_reach2 0.021182 0.006312
