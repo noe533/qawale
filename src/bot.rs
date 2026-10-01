@@ -532,6 +532,56 @@ impl Bot {
         }
     }
 
+    /// Analyse : valeur de **chaque** coup (une entrée par position résultante distincte, à symétrie près),
+    /// du point de vue du joueur au trait, triée du meilleur au moins bon. Contrairement à `search`, qui ne
+    /// prouve que « moins bon » pour les coups non retenus, chaque coup reçoit ici une valeur exacte à la
+    /// profondeur atteinte (fenêtre complète) : on peut donc les classer. Approfondissement itératif dans la
+    /// limite de `time_limit` ; renvoie la dernière profondeur entièrement terminée (au moins 1).
+    pub fn analyze(&mut self, g: &Game) -> (u32, Vec<(Move, Game, i32)>) {
+        self.stopped = false;
+        self.killers.fill([Move(0); 2]);
+        self.hist = [[0; 16]; 2];
+        self.nodes = 0;
+        let mut seen = HashSet::new();
+        let mut list: Vec<(Move, Game, i32)> = Vec::new();
+        g.for_each_child(|m, c| {
+            if seen.insert(c.canonical_key()) {
+                list.push((m, *c, 0));
+            }
+            true
+        });
+        // Profondeur 1 toujours complète (une évaluation par coup), sans limite de temps.
+        let (nnue, linear) = (self.nnue.clone(), self.linear.clone());
+        for e in list.iter_mut() {
+            e.2 = Self::terminal_score(&e.1, 1).unwrap_or_else(|| -static_eval(&e.1, nnue.as_deref(), linear.as_deref(), &self.eval));
+        }
+        list.sort_by(|a, b| b.2.cmp(&a.2));
+        let mut done = 1;
+        self.deadline = Instant::now() + self.time_limit;
+        for depth in 2..=self.max_depth.min(plies_left(g)) {
+            let mut scores = Vec::with_capacity(list.len());
+            for (_, c, _) in &list {
+                let s = match Self::terminal_score(c, 1) {
+                    Some(s) => s,
+                    None => -self.negamax(c, depth - 1, -INF, INF, 1),
+                };
+                if self.stopped {
+                    break;
+                }
+                scores.push(s);
+            }
+            if self.stopped {
+                break;
+            }
+            for (e, s) in list.iter_mut().zip(scores) {
+                e.2 = s;
+            }
+            list.sort_by(|a, b| b.2.cmp(&a.2));
+            done = depth;
+        }
+        (done, list)
+    }
+
     /// Valeur exacte de la position (résolution complète, sans limite de temps).
     pub fn solve(&mut self, g: &Game) -> i32 {
         self.solve_within(g, Duration::from_secs(1 << 30)).unwrap()

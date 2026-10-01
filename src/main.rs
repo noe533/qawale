@@ -1,5 +1,5 @@
-use qawale::bot::WIN;
-use qawale::game::{Game, Status, STONES_PER_PLAYER};
+use qawale::bot::{Bot, WIN};
+use qawale::game::{Game, Move, Status, STONES_PER_PLAYER};
 use qawale::player::{BotSpec, Player, SPEC_HELP};
 use qawale::ui::{parse_move, player_name, render};
 use std::io::{self, BufRead, Write};
@@ -21,6 +21,8 @@ struct Options {
     depth: Option<u32>,
     stones: u8,
     ansi: bool,
+    /// Après chaque coup d'un humain, le bot dit quel rang ce coup occupe parmi tous les coups possibles.
+    analyse: bool,
 }
 
 fn parse_args() -> Options {
@@ -31,6 +33,7 @@ fn parse_args() -> Options {
         depth: None,
         stones: STONES_PER_PLAYER,
         ansi: true,
+        analyse: true,
     };
     let args: Vec<String> = std::env::args().skip(1).collect();
     let side = |v: &str| if v == "humain" || v == "h" { None } else { Some(v.to_string()) };
@@ -61,6 +64,10 @@ fn parse_args() -> Options {
                 o.ansi = false;
                 takes_value = false;
             }
+            "--sans-analyse" => {
+                o.analyse = false;
+                takes_value = false;
+            }
             _ => usage(),
         }
         i += if takes_value { 2 } else { 1 };
@@ -71,9 +78,10 @@ fn parse_args() -> Options {
 fn usage() -> ! {
     eprintln!(
         "usage : qawale [--mode hb|bh|hh|bb] [--bot BOT] [--rouge humain|BOT] [--jaune humain|BOT]
-               [--time SECONDES] [--depth N] [--stones 1..10] [--no-color]
+               [--time SECONDES] [--depth N] [--stones 1..10] [--no-color] [--sans-analyse]
   hb = humain (Rouge) contre bot, bh = bot contre humain (Jaune), hh, bb
   --time : temps par coup par défaut des bots ; --depth : ajoute prof=N aux bots
+  --sans-analyse : ne pas noter les coups des humains (rang parmi tous les coups, selon le bot de --bot)
 
 {SPEC_HELP}"
     );
@@ -108,6 +116,46 @@ fn describe_score(score: i32) -> String {
     }
 }
 
+/// Note le coup `m` d'un humain dans la position `g` : rang parmi tous les coups (positions distinctes à
+/// symétrie près), écart avec le meilleur, appréciation. Valeurs du point de vue de l'humain.
+fn rate_move(bot: &mut Bot, g: &Game, m: Move) -> String {
+    let t0 = std::time::Instant::now();
+    let (depth, list) = bot.analyze(g);
+    let key = g.play(m).canonical_key();
+    let Some(i) = list.iter().position(|e| e.1.canonical_key() == key) else {
+        return String::new();
+    };
+    let (mine, best) = (list[i].2, list[0].2);
+    let rank = 1 + list.iter().filter(|e| e.2 > mine).count();
+    let ties = list.iter().filter(|e| e.2 == mine).count();
+    let forced = WIN - 100;
+    let verdict = if best >= forced && mine < forced {
+        "vous laissez passer un gain forcé !".to_string()
+    } else if mine <= -forced && best > -forced {
+        "gaffe : cela permet au bot de forcer le gain".to_string()
+    } else {
+        let loss = best - mine;
+        match loss {
+            0 if ties > 1 => format!("parmi les meilleurs ({ties} coups ex æquo)"),
+            0 => "meilleur coup !".to_string(),
+            1..=30 => "excellent".to_string(),
+            31..=100 => "bon coup".to_string(),
+            101..=250 => "imprécision".to_string(),
+            251..=500 => "erreur".to_string(),
+            _ => "grosse erreur".to_string(),
+        }
+    };
+    let mut s = format!(
+        "Votre coup : {rank}e sur {} — {verdict}  (le vôtre : {}",
+        list.len(),
+        describe_score(mine)
+    );
+    if mine != best {
+        s += &format!(" ; meilleur selon le bot : {} : {}", list[0].0, describe_score(best));
+    }
+    s + &format!(")   [analyse prof. {depth}, {:.1} s]", t0.elapsed().as_secs_f64())
+}
+
 fn main() {
     let opts = parse_args();
     println!("=== Qawale ===  (Rouge commence)\n{HELP}\n");
@@ -115,6 +163,11 @@ fn main() {
     let human = [players[0].is_none(), players[1].is_none()];
     // Bot qui répond à la commande « indice ».
     let mut hint = BotSpec::default().build(Duration::from_secs_f64(opts.time));
+    // Analyste des coups humains : le moteur décrit par --bot (même réseau, même temps de réflexion).
+    let mut analyst = (opts.analyse && (human[0] || human[1]))
+        .then(|| BotSpec::parse(&opts.bot).ok())
+        .flatten()
+        .map(|s| s.build_bot(Duration::from_secs_f64(opts.time)));
     println!();
     let mut history: Vec<Game> = vec![Game::with_stones(opts.stones)];
     let stdin = io::stdin();
@@ -157,7 +210,8 @@ fn main() {
         print!("{} > ", player_name(g.player));
         io::stdout().flush().ok();
         let Some(Ok(line)) = lines.next() else { break };
-        let line = line.trim().to_lowercase();
+        // PowerShell préfixe parfois l'entrée redirigée d'une marque d'ordre des octets (BOM).
+        let line = line.trim().trim_start_matches('\u{feff}').to_lowercase();
         match line.as_str() {
             "" => continue,
             "quitter" | "q" | "quit" => break,
@@ -189,7 +243,12 @@ fn main() {
                 }
             }
             _ => match parse_move(&line).and_then(|m| g.check_move(m).map(|_| m)) {
-                Ok(m) => history.push(g.play(m)),
+                Ok(m) => {
+                    if let Some(a) = analyst.as_mut() {
+                        println!("{}\n", rate_move(a, &g, m));
+                    }
+                    history.push(g.play(m));
+                }
                 Err(e) => println!("Coup invalide : {e}"),
             },
         }

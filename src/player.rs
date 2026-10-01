@@ -257,21 +257,24 @@ impl BotSpec {
     pub fn build(&self, default_time: Duration) -> Box<dyn Player> {
         match self.kind {
             Kind::Random => Box::new(RandomPlayer { name: self.name.clone(), rng: 1 }),
-            Kind::AlphaBeta => {
-                // Sans limite de temps : un jour suffit à ne jamais l'atteindre.
-                let time = self.effective_time(default_time).unwrap_or(Duration::from_secs(86_400));
-                let mut bot = Bot::with_tt(time, self.depth.unwrap_or(64), self.tt, self.tt_mb);
-                bot.use_tt_move = self.tt_move;
-                bot.ordering = self.ordering;
-                bot.pvs = self.pvs;
-                bot.leaf_killers = self.leaf_killers;
-                bot.history = self.history;
-                bot.eval = self.eval;
-                bot.linear = self.eval_file.as_ref().map(|(_, e)| e.clone());
-                bot.nnue = self.nnue_file.as_ref().map(|(_, n)| n.clone());
-                Box::new(AlphaBeta { name: self.name.clone(), bot })
-            }
+            Kind::AlphaBeta => Box::new(AlphaBeta { name: self.name.clone(), bot: self.build_bot(default_time) }),
         }
+    }
+
+    /// Le moteur alpha-bêta décrit (quel que soit `kind`), par exemple pour analyser les coups d'un humain.
+    pub fn build_bot(&self, default_time: Duration) -> Bot {
+        // Sans limite de temps : un jour suffit à ne jamais l'atteindre.
+        let time = self.effective_time(default_time).unwrap_or(Duration::from_secs(86_400));
+        let mut bot = Bot::with_tt(time, self.depth.unwrap_or(64), self.tt, self.tt_mb);
+        bot.use_tt_move = self.tt_move;
+        bot.ordering = self.ordering;
+        bot.pvs = self.pvs;
+        bot.leaf_killers = self.leaf_killers;
+        bot.history = self.history;
+        bot.eval = self.eval;
+        bot.linear = self.eval_file.as_ref().map(|(_, e)| e.clone());
+        bot.nnue = self.nnue_file.as_ref().map(|(_, n)| n.clone());
+        bot
     }
 
     /// Résumé lisible des réglages.

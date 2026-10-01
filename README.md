@@ -42,6 +42,13 @@ Cette commande lance une partie où **vous** jouez Rouge contre l'IA la plus for
 une fois le vôtre posé.
 Commandes : `coups` (liste les coups légaux), `indice` (conseil du bot), `annuler`, `aide`, `quitter`.
 
+**Note de vos coups** : après chacun de vos coups, le bot (celui de `--bot`, avec le même temps de réflexion)
+analyse la position d'avant et classe tous les coups possibles, par exemple
+`Votre coup : 2e sur 5 — excellent (le vôtre : éval +60 ; meilleur selon le bot : a1 hdd : éval +62)`.
+Appréciations selon l'écart avec le meilleur : meilleur coup, excellent (≤ 30), bon coup (≤ 100), imprécision (≤ 250),
+erreur (≤ 500), grosse erreur, ou gain forcé manqué / gaffe. Les coups menant à la même position (à symétrie près)
+comptent pour un. `--sans-analyse` désactive la note.
+
 **Lire l'évaluation du bot** (affichée après chacun de ses coups, de son point de vue) : « gain forcé en N »
 ou « perte forcée en N » sont des certitudes (N en demi-coups) ; sinon le score est une estimation
 (négatif = bon pour vous).

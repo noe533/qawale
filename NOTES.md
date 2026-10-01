@@ -10,7 +10,9 @@ alpha-bêta + table (symétries) + tri des coups (évaluation des filles) + kill
 non triés) killers + historique par case de départ (+29 Elo). README.md = présentation pour un nouveau venu.
 **Prochaine étape** : (1) lancer la boucle NNUE `train/nnue_loop.py` (nuit) ; (2) politique apprise sur la case de départ
 pour le dernier étage (encore 15 × √N nœuds, rang moyen ~20 du coup qui coupe) ; (3) LMR ; (4) réseau par phase de jeu,
-réseau plus grand une fois plus de données.
+réseau plus grand une fois plus de données ; (5, optionnel) gestion du temps sur une réserve par partie (ne pas commencer
+un palier qu'on ne finira pas, plus de temps sur les coups critiques, jouer vite les coups évidents) : demande des tournois
+au temps par partie dans `matches`.
 Historique : l'évaluation linéaire (`features.rs`) jugeait mieux que la classique mais restait trop lente au temps.
 
 **Boucle de nuit (tournée le 2026-10-01, 13 itérations)** : `.venv/Scripts/python.exe train/night_loop.py --stop-at 08:30`.

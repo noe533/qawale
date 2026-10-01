@@ -157,6 +157,22 @@ fn main() {
             }
         }
         println!("{line}");
+        // Profondeur atteinte selon la phase (utile pour les bots au temps).
+        let mut by_phase: std::collections::BTreeMap<u8, Vec<u32>> = Default::default();
+        for (g, r) in positions.iter().zip(&res) {
+            let left = g.reserve[0] + g.reserve[1];
+            by_phase.entry((left - 1) / 4).or_default().push(r.1.depth);
+        }
+        let mut phases = String::new();
+        for (b, ds) in by_phase.iter().rev() {
+            phases += &format!(
+                "  {}-{} restants : {:.2}",
+                b * 4 + 4,
+                b * 4 + 1,
+                ds.iter().sum::<u32>() as f64 / ds.len() as f64
+            );
+        }
+        println!("    profondeur complète moyenne :{phases}");
         // Qualité du tri par profondeur restante.
         let mut cuts = [[0u64; 4]; 8];
         for r in &res {
