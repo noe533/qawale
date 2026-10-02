@@ -4,7 +4,8 @@ Journal des résultats, idées et décisions. À tenir à jour à chaque session
 Dernière mise à jour : 2026-10-02.
 
 ## ▶ Reprise rapide (à lire en premier dans une nouvelle session)
-**Où on en est (2026-10-02)** : 10 galets par joueur (variante retenue). **Meilleur bot : `nnue=weights/nnue_h64.bin`**
+**Où on en est (2026-10-02)** : 10 galets par joueur (variante retenue). **Meilleur bot : `nnue=weights/nnue_h64_v2.bin`**
+(boucle NNUE de la nuit du 2 octobre, it04 : +53 Elo contre `nnue_h64.bin`, la première version)
 (réseau NNUE quantifié, sections « NNUE » plus bas) : **+218 Elo contre l'évaluation classique à 100 ms**. Recherche :
 alpha-bêta + table (symétries) + tri des coups (évaluation des filles) + killers + PVS ; au dernier étage (enfants = feuilles,
 non triés) killers + historique par case de départ (+29 Elo). README.md = présentation pour un nouveau venu.
@@ -346,3 +347,15 @@ Depuis la position initiale, table 512 Mo, recherche actuelle (évaluation class
   sur ce portable. Depuis le premier bot, tous les progrès (table + coup mémorisé, tri, PVS, killers/historique)
   représentent ×50 à ×150 sur la résolution exacte, soit ~1,5 à 2 demi-coups ; un ordre parfait n'apporterait
   au mieux qu'un facteur ~15 de plus (on est à ~15 × √N) ⇒ la règle à 8 ou 10 galets est hors de portée.
+
+## Boucle NNUE : nuit du 2 octobre (14 itérations, 01:53 → 11:06, `data/nnue_loop/results.md`)
+- Étiquettes prof. 4 par le champion, 10 000 parties/itération (~136 k positions), candidats H=64 et H=128, 37-48 min/itération.
+- Promotions : it02 (+27 contre le départ, +11 à +43), it04 (+21 contre it02, +4 à +38). Ensuite 10 itérations sans
+  progrès significatif (candidats entre −14 et +10 contre it04) : **plafond après ~4 itérations**, comme la boucle linéaire.
+- Vérification indépendante (500 parties, 250 ouvertures distinctes, 100 ms) : **it04 bat le départ +53 (+34 à +73)**
+  ⇒ installé : `weights/nnue_h64_v2.bin` (nouveau meilleur bot, départ par défaut de nnue_loop).
+- H=128 n'a jamais battu H=64 à temps égal ; à **profondeur fixe** (prof. 3, mêmes données it14) H=128 ne fait que
+  +21 (−4 à +46) pour 1,4× le temps ⇒ la taille du réseau n'est pas le facteur limitant : ce sont les données / étiquettes.
+- Données disponibles pour la politique : 14 × ~136 k positions avec `best_move` (data/nnue_loop/itNN/positions.csv).
+- Pistes pour casser le plafond : étiquettes plus profondes (prof. 5-6 sur moins de parties), plus de diversité
+  (ouvertures aléatoires plus longues, epsilon), cible mêlant davantage le résultat réel des parties (lam < 0,9).

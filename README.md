@@ -24,7 +24,7 @@ l'IA joue contre elle-même. On peut jouer contre elle dans le terminal.
 Prérequis : [Rust](https://rustup.rs) (édition 2024, Rust ≥ 1.85).
 
 ```sh
-cargo run --release -- --mode hb --stones 10 --time 2 --bot "full nnue=weights/nnue_h64.bin"
+cargo run --release -- --mode hb --stones 10 --time 2 --bot "full nnue=weights/nnue_h64_v2.bin"
 ```
 
 Cette commande lance une partie où **vous** jouez Rouge contre l'IA la plus forte (2 s par coup).
@@ -129,7 +129,7 @@ champion actuel, et promotion seulement si l'amélioration est statistiquement n
 | `src/main.rs`, `src/ui.rs` | partie dans le terminal |
 | `examples/` | outils (tournois, mesures, génération de données) |
 | `train/` | scripts Python d'entraînement et boucles d'amélioration |
-| `weights/` | évaluations entraînées versionnées (`nnue_h64.bin` = la meilleure) |
+| `weights/` | évaluations entraînées versionnées (`nnue_h64_v2.bin` = la meilleure, `nnue_h64.bin` = la première) |
 | `data/` | données générées, régénérables (non versionné) |
 | `NOTES.md` | journal de recherche complet |
 
@@ -139,7 +139,7 @@ Tous les outils prennent des bots décrits par une courte chaîne : `[nom[@ms]] 
 
 ```
 "full@1000"                                   bot par défaut, 1 s par coup
-"fort@100 nnue=weights/nnue_h64.bin"          réseau NNUE, 100 ms par coup
+"fort@100 nnue=weights/nnue_h64_v2.bin"          réseau NNUE, 100 ms par coup
 "essai prof=3 tri=non pvs=non"                profondeur fixe 3, sans tri ni PVS
 "premier@1000 base=base tri=non pvs=non"      alpha-bêta seul, comme la toute première version
 ```
@@ -165,7 +165,7 @@ Tous se lancent avec `cargo run --release --example NOM -- [options]` (options d
 Exemple, un tournoi :
 
 ```sh
-cargo run --release --example matches -- --bot "classique@100" --bot "nnue@100 nnue=weights/nnue_h64.bin" --stones 10 --games 500 --threads 10
+cargo run --release --example matches -- --bot "classique@100" --bot "nnue@100 nnue=weights/nnue_h64_v2.bin" --stones 10 --games 500 --threads 10
 ```
 
 ### Entraîner un réseau
@@ -174,8 +174,8 @@ Prérequis Python : `numpy` et `torch` (GPU CUDA conseillé, ~1 min par entraîn
 
 ```sh
 # 1. Générer et étiqueter des parties (≈ 25-40 min pour 10 000 parties à 20 threads)
-cargo run --release --example gen_data -- --games 10000 --stones 10 --player "full prof=2 nnue=weights/nnue_h64.bin" \
-    --label-depth 4 --label-nnue weights/nnue_h64.bin --exact-plies 4 --threads 20 --out data/run1/positions.csv
+cargo run --release --example gen_data -- --games 10000 --stones 10 --player "full prof=2 nnue=weights/nnue_h64_v2.bin" \
+    --label-depth 4 --label-nnue weights/nnue_h64_v2.bin --exact-plies 4 --threads 20 --out data/run1/positions.csv
 # 2. Exporter
 cargo run --release --example export_features -- --in data/run1/positions.csv --out-prefix data/run1/
 cargo run --release --example export_nnue -- data/run1
