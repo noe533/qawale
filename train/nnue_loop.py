@@ -45,7 +45,12 @@ p.add_argument("--games", type=int, default=10000, help="parties générées par
 p.add_argument("--label-depth", type=int, default=4)
 p.add_argument("--window", type=int, default=6, help="nombre d'itérations de données pour l'entraînement")
 p.add_argument("--min-positions", type=int, default=500_000,
-               help="en dessous, on complète avec les données de l'ancienne boucle (data/loop/it*)")
+               help="en dessous, on complète la fenêtre avec les données de --base")
+p.add_argument("--base", default="data/loop/it[0-9]*",
+               help="données de complément : motifs de dossiers séparés par des virgules (ex. data/nnue_loop/it1[0-4])")
+p.add_argument("--new-weight", type=int, default=1,
+               help="nombre de fois où les dossiers de la fenêtre sont répétés à l'entraînement (pour peser face à --base)")
+p.add_argument("--search-time", type=int, default=5000, help="plafond par recherche d'étiquette, en ms")
 p.add_argument("--hidden", default="64,128", help="tailles de réseau candidates, séparées par des virgules")
 p.add_argument("--epochs", type=int, default=40)
 p.add_argument("--threads", type=int, default=20, help="threads de gen_data (les matchs en utilisent 10)")
@@ -160,7 +165,7 @@ if not os.path.exists(results_md):
                 f"{args.promote_lo:+.0f}. Étiquettes : recherche prof. {args.label_depth} avec le champion.\n\n"
                 "| it | fin | positions (entraînement) | vs champion | vs classique | vs départ | promu | durée |\n"
                 "|---|---|---|---|---|---|---|---|\n")
-base_dirs = sorted(d for d in glob.glob("data/loop/it[0-9]*") if os.path.isdir(d))
+base_dirs = sorted(d for pat in args.base.split(",") for d in glob.glob(pat.strip()) if os.path.isdir(d))
 
 try:
     while state["next"] <= args.iterations and not stop_requested():
@@ -176,7 +181,7 @@ try:
         step(os.path.join(d, "gen.ok"), lambda: run(
             [os.path.join(EXE, "gen_data"), "--games", str(args.games), "--stones", "10",
              "--player", f"full prof=2 nnue={champ}", "--label-depth", str(args.label_depth),
-             "--label-nnue", champ, "--search-time", "5000",
+             "--label-nnue", champ, "--search-time", str(args.search_time),
              "--exact-plies", "4", "--exact-time", "3000", "--threads", str(args.threads),
              "--seed", str(2000 + it), "--out", pos] + (["--resume"] if os.path.exists(pos) else []),
             os.path.join(d, "gen.log")))
@@ -193,7 +198,7 @@ try:
         # 3. Candidat : fenêtre des dernières itérations, complétée par l'ancienne boucle si trop petite.
         window = [os.path.join(D, f"it{j:02d}") for j in range(max(1, it - args.window + 1), it + 1)]
         n_window = sum(n_positions(w) for w in window)
-        data = window + (base_dirs if n_window < args.min_positions else [])
+        data = window * args.new_weight + (base_dirs if n_window < args.min_positions else [])
         # Un candidat par taille de réseau (--hidden 64,128) : chacun affronte le champion au temps.
         cands = {}
         for h in [int(x) for x in args.hidden.split(",")]:
