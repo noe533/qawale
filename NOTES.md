@@ -422,3 +422,10 @@ entiers) peut servir à des outils externes (SAT, acquisition de contraintes).
   référence idéale (meilleure note du réseau dans la branche, tout évaluer) 55,2.
   ⇒ −22 % au mieux, avec 626 règles : du même ordre que ce que l'historique apporte déjà dans la recherche ; même l'idéal
   statique reste à 55 (le meilleur coup d'une recherche prof. 4 n'est pas celui de la note immédiate). Pas intégré.
+
+## Poids du résultat réel dans la cible (λ, 2026-10-02, `data/lam_test/`)
+Cible hors fin exacte = λ·tanh(recherche prof. 4 / 1000) + (1 − λ)·résultat de la partie. Réseaux H=64 réentraînés sur
+it09-it14 (816 k positions), contre v2, 500 parties à 100 ms : λ 0,9 (témoin) **+21 (+1 à +41)** ; 0,7 −2 ; 0,5 −6 ; 0,3 +6
+(tous ±22). ⇒ Plus de poids au résultat n'aide pas : les résultats viennent de parties jouées à prof. 2 avec 5 % de coups
+au hasard, trop bruitées (le R² baisse de 0,45 à 0,14, la cible devenant surtout du bruit). On garde λ = 0,9.
+Le témoin λ 0,9 à +21 confirme que réentraîner sur la fenêtre it09-it14 donne un réseau ≈ v2 (plafond de la boucle).
