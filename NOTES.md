@@ -376,3 +376,11 @@ Rust : `nnue::Policy` (quantifiée, même noyau que la couche 2, **33 ns/appel**
   loin dans la case : ça s'annule. **Désormais, au moins la moitié du gaspillage est à l'intérieur d'une case** (ordre des
   chemins) ⇒ prochaine piste : trier les directions dans le parcours des chemins (au moins le dernier pas, qui pose le galet
   du joueur au sommet de la case d'arrivée).
+- **Tri des chemins pas à pas (2026-10-02, `chemins=`, désactivé par défaut)** : `Game::for_each_child_ordered_obs` accepte un
+  `PathGuide` ; à chaque pas, d'abord la direction d'où le dernier galet (celui du joueur) peut finir sur la case la plus utile
+  (compléter / prolonger une ligne libre, bloquer une ligne de 3 adverse ; table d'atteinte de features.rs).
+  Résultat : **aucun gain** (rang dans la case 18,5 → 18,5 à prof. 3, 8,45 → 8,49 à prof. 4 ; nœuds ×1,00-1,01) et ~10 % plus lent.
+- ⇒ Au dernier étage, le coup qui coupe est simplement « un enfant dont l'évaluation ≥ bêta » ; ni la case (politique),
+  ni la case d'arrivée du dernier galet (heuristique) ne le prédisent mieux que l'historique. Prédire l'évaluation d'un enfant
+  moins cher que l'évaluer (~130 ns, dont 33 ns de génération incompressible) semble difficile. Pistes plus prometteuses :
+  réduire le coût par enfant (couche 2 plus petite, VNNI), élaguer plutôt que trier (LMR), meilleures étiquettes.

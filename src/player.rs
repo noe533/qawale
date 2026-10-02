@@ -95,6 +95,7 @@ pub struct BotSpec {
     pub pvs: bool,
     pub leaf_killers: bool,
     pub history: bool,
+    pub path_order: bool,
     pub eval: EvalParams,
     /// Évaluation apprise chargée depuis un fichier (chemin, poids).
     pub eval_file: Option<(String, Arc<LinearEval>)>,
@@ -128,6 +129,7 @@ Description d'un bot : [nom[@ms]] [clé=valeur]...
   pvs=      oui | non               (recherche à fenêtre nulle après le premier coup, défaut oui)
   killer1=  oui | non               (dernier étage : essayer les coups killers d'abord, défaut oui)
   histo=    oui | non               (dernier étage : cases de départ selon l'historique, défaut oui)
+  chemins=  oui | non               (dernier étage : chemins ordonnés pas à pas vers la meilleure case d'arrivée, défaut non : sans gain mesuré)
   poids=    a,b,c,d                 poids d'une ligne libre avec 0..3 sommets (défaut 0,1,6,40)
   surface=  bonus par sommet contrôlé (défaut 2)
   eval=     fichier de poids appris (ex. data/eval_linear.txt) ; « classique » = évaluation d'origine
@@ -150,6 +152,7 @@ impl Default for BotSpec {
             pvs: true,
             leaf_killers: true,
             history: true,
+            path_order: false,
             eval: EvalParams::default(),
             eval_file: None,
             nnue_file: None,
@@ -225,6 +228,7 @@ impl BotSpec {
             "pvs" => self.pvs = parse_bool(v)?,
             "killer1" => self.leaf_killers = parse_bool(v)?,
             "histo" | "history" => self.history = parse_bool(v)?,
+            "chemins" | "paths" => self.path_order = parse_bool(v)?,
             "poids" | "weights" => {
                 let w: Vec<i32> = v.split(',').map(|x| parse_num(k, x)).collect::<Result<_, _>>()?;
                 self.eval.line_weight = w.try_into().map_err(|_| "poids= : 4 valeurs attendues (a,b,c,d)".to_string())?;
@@ -276,6 +280,7 @@ impl BotSpec {
         bot.pvs = self.pvs;
         bot.leaf_killers = self.leaf_killers;
         bot.history = self.history;
+        bot.path_order = self.path_order;
         bot.eval = self.eval;
         bot.linear = self.eval_file.as_ref().map(|(_, e)| e.clone());
         bot.nnue = self.nnue_file.as_ref().map(|(_, n)| n.clone());

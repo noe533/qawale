@@ -1,7 +1,8 @@
 //! Bot : négamax alpha-bêta avec approfondissement itératif, limite de temps
 //! et table de transposition (optionnellement modulo les 8 symétries du plateau).
 
-use crate::features::LinearEval;
+use crate::features::{reach_table, LinearEval};
+use crate::game::{PathGuide, MAX_STACK};
 use crate::nnue::{Accumulator, Nnue, Policy};
 use crate::game::{Game, Move, Status, INV_SYM, LINES, RED, YELLOW};
 use std::collections::HashSet;
@@ -55,6 +56,42 @@ fn static_eval(g: &Game, nnue: Option<&Nnue>, linear: Option<&LinearEval>, p: &E
         (None, Some(l)) => l.eval(g),
         (None, None) => evaluate(g, p),
     }
+}
+
+/// Guide des chemins (dernier étage) : intérêt, pour le joueur au trait, que son propre galet (le dernier
+/// déposé) finisse au sommet de chaque case — d'après les lignes qui la traversent : compléter une ligne de 3
+/// libre (gain), prolonger une ligne libre, bloquer une ligne de 3 adverse — puis, pour chaque case et chaque
+/// nombre de pas k, la meilleure valeur atteignable en exactement k pas (table d'atteinte sans demi-tour).
+/// Approximation : ignore les sommets modifiés en chemin par les autres galets.
+fn path_guide(g: &Game) -> PathGuide {
+    let (me, opp) = (g.tops(g.player), g.tops(g.player ^ 1));
+    let mut value = [0i32; 16];
+    for (sq, v) in value.iter_mut().enumerate() {
+        let bit = 1u16 << sq;
+        for &l in LINES.iter().filter(|&&l| l & bit != 0) {
+            let (m, o) = ((me & l & !bit).count_ones(), (opp & l & !bit).count_ones());
+            *v += match (m, o) {
+                (_, 0) => [1, 4, 20, 1000][m as usize],
+                (0, 3) => 200,
+                _ => 0,
+            };
+        }
+    }
+    let kmax = g.heights.iter().copied().max().unwrap_or(0) as usize;
+    let reach = reach_table();
+    let mut guide = [[0i32; MAX_STACK + 1]; 16];
+    for sq in 0..16 {
+        guide[sq][0] = value[sq];
+        for k in 1..=kmax {
+            let (mut bits, mut best) = (reach[sq][k], 0);
+            while bits != 0 {
+                best = best.max(value[bits.trailing_zeros() as usize]);
+                bits &= bits - 1;
+            }
+            guide[sq][k] = best;
+        }
+    }
+    guide
 }
 
 /// Nombre de demi-coups restant avant la fin forcée de la partie.
@@ -176,6 +213,9 @@ pub struct Bot {
     pub leaf_killers: bool,
     /// Au dernier étage : générer d'abord les coups des cases de départ qui ont souvent coupé.
     pub history: bool,
+    /// Au dernier étage : ordonner les chemins pas à pas (`path_guide`). Désactivé par défaut : aucun gain
+    /// mesuré (rang du coup qui coupe inchangé), et ~10 % plus lent.
+    pub path_order: bool,
     tt: Tt,
     /// Historique par joueur au trait et case de départ du coup qui a provoqué une coupure
     /// (pondéré par profondeur²), remis à zéro à chaque recherche.
@@ -204,7 +244,7 @@ impl Bot {
 
     pub fn with_tt(time_limit: Duration, max_depth: u32, tt_mode: TtMode, tt_mb: usize) -> Bot {
         let tt = Tt::new(if tt_mode == TtMode::Off { 0 } else { tt_mb });
-        Bot { time_limit, max_depth, tt_mode, tt_min_depth: 1, use_tt_move: true, iterative_solve: true, eval: EvalParams::default(), linear: None, nnue: None, policy: None, ordering: true, pvs: true, leaf_killers: true, history: true, tt, hist: [[0; 16]; 2], killers: vec![[Move(0); 2]; MAX_PLY], move_bufs: vec![Vec::new(); MAX_PLY], nodes: 0, tt_hits: 0, cut_stats: [[0; 6]; 8], deadline: Instant::now(), stopped: false }
+        Bot { time_limit, max_depth, tt_mode, tt_min_depth: 1, use_tt_move: true, iterative_solve: true, eval: EvalParams::default(), linear: None, nnue: None, policy: None, ordering: true, pvs: true, leaf_killers: true, history: true, path_order: false, tt, hist: [[0; 16]; 2], killers: vec![[Move(0); 2]; MAX_PLY], move_bufs: vec![Vec::new(); MAX_PLY], nodes: 0, tt_hits: 0, cut_stats: [[0; 6]; 8], deadline: Instant::now(), stopped: false }
     }
 
     /// Clé de table et symétrie menant au repère dans lequel les coups sont stockés.
@@ -386,6 +426,8 @@ impl Bot {
                     _ => None,
                 };
                 let use_history = self.history || policy_scores.is_some();
+                // Chemins : à chaque pas, d'abord la direction d'où son propre galet peut finir sur la meilleure case.
+                let guide = self.path_order.then(|| path_guide(g));
                 let (mut sqs, mut n) = ([0u8; 16], 0);
                 if let Some(sc) = policy_scores {
                     let mut occ = g.occupied();
@@ -414,6 +456,13 @@ impl Bot {
                         sqs[j] = sq;
                         n += 1;
                     }
+                } else {
+                    let mut occ = g.occupied();
+                    while occ != 0 {
+                        sqs[n] = occ.trailing_zeros() as u8;
+                        occ &= occ - 1;
+                        n += 1;
+                    }
                 }
                 // Diagnostic : pour le coup qui coupe, coups essayés depuis les cases précédentes et rang dans sa case.
                 let (mut cur_sq, mut within, mut before, mut cut_at) = (u8::MAX, 0u64, 0u64, None);
@@ -433,8 +482,8 @@ impl Bot {
                     }
                     cont
                 };
-                if use_history {
-                    g.for_each_child_ordered_obs(&sqs[..n], &mut acc, &mut rest);
+                if use_history || guide.is_some() {
+                    g.for_each_child_ordered_obs(&sqs[..n], guide.as_ref(), &mut acc, &mut rest);
                 } else {
                     g.for_each_child_obs(&mut acc, &mut rest);
                 }

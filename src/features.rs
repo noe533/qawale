@@ -38,7 +38,7 @@ pub fn feature_names() -> Vec<String> {
 
 /// `reach_table()[sq][n]` : cases où peut se trouver, après exactement `n` pas,
 /// un chemin sans demi-tour partant de `sq` (bitboard).
-fn reach_table() -> &'static [[u16; MAX_STACK + 1]; 16] {
+pub(crate) fn reach_table() -> &'static [[u16; MAX_STACK + 1]; 16] {
     static T: OnceLock<[[u16; MAX_STACK + 1]; 16]> = OnceLock::new();
     T.get_or_init(|| {
         let mut t = [[0u16; MAX_STACK + 1]; 16];

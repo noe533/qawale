@@ -492,7 +492,7 @@ impl Game {
         while occ != 0 {
             let sq = occ.trailing_zeros() as usize;
             occ &= occ - 1;
-            if !self.children_from(sq, obs, &mut f) {
+            if !self.children_from(sq, None, obs, &mut f) {
                 return false;
             }
         }
@@ -502,9 +502,11 @@ impl Game {
     /// Comme `for_each_child_obs`, mais en prenant les cases de départ dans l'ordre de `squares`
     /// (qui doit contenir chaque case occupée exactement une fois) : pour essayer d'abord les coups
     /// partant des cases les plus prometteuses.
+    /// Avec un `guide` (voir `PathGuide`), les chemins sont aussi ordonnés, pas à pas.
     pub fn for_each_child_ordered_obs<O: StoneObserver, F: FnMut(Move, &Game, &O) -> bool>(
         &self,
         squares: &[u8],
+        guide: Option<&PathGuide>,
         obs: &mut O,
         mut f: F,
     ) -> bool {
@@ -513,7 +515,7 @@ impl Game {
         }
         for &sq in squares {
             debug_assert!(self.heights[sq as usize] > 0);
-            if !self.children_from(sq as usize, obs, &mut f) {
+            if !self.children_from(sq as usize, guide, obs, &mut f) {
                 return false;
             }
         }
@@ -522,7 +524,13 @@ impl Game {
 
     /// Tous les coups partant de la case `sq` (occupée).
     #[inline]
-    fn children_from<O: StoneObserver, F: FnMut(Move, &Game, &O) -> bool>(&self, sq: usize, obs: &mut O, f: &mut F) -> bool {
+    fn children_from<O: StoneObserver, F: FnMut(Move, &Game, &O) -> bool>(
+        &self,
+        sq: usize,
+        guide: Option<&PathGuide>,
+        obs: &mut O,
+        f: &mut F,
+    ) -> bool {
         let h = self.heights[sq];
         for i in 0..h {
             obs.stone(sq, i, self.stone(sq, i), false);
@@ -531,7 +539,7 @@ impl Game {
         obs.top(sq, top, false);
         let mut g = *self;
         let (stack, len) = g.place_and_lift(sq);
-        let cont = walk(&mut g, sq, NONE, stack, len, Move::new(sq as u8), obs, f);
+        let cont = walk(&mut g, sq, NONE, stack, len, Move::new(sq as u8), guide, obs, f);
         for i in 0..h {
             obs.stone(sq, i, self.stone(sq, i), true);
         }
@@ -595,7 +603,12 @@ impl Game {
     }
 }
 
+/// Guide pour ordonner les chemins : `guide[sq][k]` = intérêt de la meilleure case où le dernier galet
+/// (celui du joueur, qui finit au sommet) peut arriver en exactement `k` pas depuis `sq`.
+pub type PathGuide = [[i32; MAX_STACK + 1]; 16];
+
 /// DFS sur les chemins de dépôt : à chaque pas on dépose la tuile du bas de la main.
+/// Avec un `guide`, les directions sont essayées de la plus prometteuse à la moins prometteuse.
 #[allow(clippy::too_many_arguments)]
 fn walk<O: StoneObserver, F: FnMut(Move, &Game, &O) -> bool>(
     g: &mut Game,
@@ -604,42 +617,79 @@ fn walk<O: StoneObserver, F: FnMut(Move, &Game, &O) -> bool>(
     hand: u64,
     remaining: u32,
     mv: Move,
+    guide: Option<&PathGuide>,
     obs: &mut O,
     f: &mut F,
 ) -> bool {
     if remaining == 0 {
         return f(mv, g, obs);
     }
-    let color = (hand & 3) as u8;
     let back = prev ^ 1; // si prev == NONE, back vaut 0xFE : jamais égal à une direction
+    let Some(gd) = guide else {
+        for d in 0..4u8 {
+            if d != back && NEIGHBOR[sq][d as usize] != NONE && !step(g, d, NEIGHBOR[sq][d as usize] as usize, hand, remaining, mv, guide, obs, f) {
+                return false;
+            }
+        }
+        return true;
+    };
+    // Directions possibles (jusqu'à 4 au premier pas, sans demi-tour interdit), triées par l'intérêt
+    // de la meilleure case d'arrivée encore atteignable.
+    let (mut dirs, mut keys, mut nd) = ([0u8; 4], [0i32; 4], 0);
     for d in 0..4u8 {
-        if d == back {
-            continue;
-        }
         let n = NEIGHBOR[sq][d as usize];
-        if n == NONE {
+        if d == back || n == NONE {
             continue;
         }
-        let n = n as usize;
-        let (h, old_top) = (g.heights[n], g.top(n));
-        obs.stone(n, h, color, true);
-        if let Some(t) = old_top {
-            obs.top(n, t, false);
+        let k = gd[n as usize][remaining as usize - 1];
+        let mut j = nd;
+        while j > 0 && keys[j - 1] < k {
+            dirs[j] = dirs[j - 1];
+            keys[j] = keys[j - 1];
+            j -= 1;
         }
-        obs.top(n, color, true);
-        g.push_stone(n, color);
-        let cont = walk(g, n, d, hand >> 2, remaining - 1, mv.push(d), obs, f);
-        g.pop_stone(n);
-        obs.top(n, color, false);
-        if let Some(t) = old_top {
-            obs.top(n, t, true);
-        }
-        obs.stone(n, h, color, false);
-        if !cont {
+        dirs[j] = d;
+        keys[j] = k;
+        nd += 1;
+    }
+    for &d in &dirs[..nd] {
+        if !step(g, d, NEIGHBOR[sq][d as usize] as usize, hand, remaining, mv, guide, obs, f) {
             return false;
         }
     }
     true
+}
+
+/// Un pas du parcours : dépose le galet du bas de la main sur `n` (direction `d`), poursuit, puis annule.
+#[allow(clippy::too_many_arguments)]
+#[inline]
+fn step<O: StoneObserver, F: FnMut(Move, &Game, &O) -> bool>(
+    g: &mut Game,
+    d: u8,
+    n: usize,
+    hand: u64,
+    remaining: u32,
+    mv: Move,
+    guide: Option<&PathGuide>,
+    obs: &mut O,
+    f: &mut F,
+) -> bool {
+    let color = (hand & 3) as u8;
+    let (h, old_top) = (g.heights[n], g.top(n));
+    obs.stone(n, h, color, true);
+    if let Some(t) = old_top {
+        obs.top(n, t, false);
+    }
+    obs.top(n, color, true);
+    g.push_stone(n, color);
+    let cont = walk(g, n, d, hand >> 2, remaining - 1, mv.push(d), guide, obs, f);
+    g.pop_stone(n);
+    obs.top(n, color, false);
+    if let Some(t) = old_top {
+        obs.top(n, t, true);
+    }
+    obs.stone(n, h, color, false);
+    cont
 }
 
 impl fmt::Display for Game {
