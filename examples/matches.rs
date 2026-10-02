@@ -98,7 +98,7 @@ fn parse_args() -> Args {
             b.name = format!("{}#{}", b.name, i + 1);
         }
     }
-    a.games = (a.games + 1) / 2 * 2;
+    a.games = a.games.div_ceil(2) * 2;
     a
 }
 
@@ -150,7 +150,7 @@ fn openings(n: usize, plies: u32, stones: u8) -> Vec<(Game, Vec<Move>)> {
             level = next;
         }
         // Mélange déterministe : les n premières forment un échantillon sans biais d'ordre.
-        let mut rng = 0x5EED_0F_0BE7u64;
+        let mut rng = 0x5E_ED0F_0BE7u64;
         for i in (1..level.len()).rev() {
             let j = (xorshift(&mut rng) % (i as u64 + 1)) as usize;
             level.swap(i, j);

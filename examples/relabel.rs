@@ -79,7 +79,7 @@ fn main() {
     if start_pos > 0 {
         println!("Reprise : {start_pos} positions déjà étiquetées.");
     }
-    let part_file = std::fs::OpenOptions::new().create(true).write(true).open(&part).unwrap();
+    let part_file = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&part).unwrap();
     part_file.set_len((start_pos * 8) as u64).unwrap();
     let mut part_file = std::fs::OpenOptions::new().append(true).open(&part).unwrap();
 

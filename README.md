@@ -65,9 +65,15 @@ Tournois à 10 galets, 100 ms par coup, 500 parties par affrontement, ouvertures
 |---|---|
 | Tri des coups + recherche à fenêtre nulle (PVS), contre l'alpha-bêta d'origine | **+141 Elo** (+118 à +164) |
 | Réseau NNUE (quantifié) contre la meilleure évaluation écrite à la main | **+218 Elo** (+193 à +244) |
+| Coups « killer » et historique au dernier étage de la recherche | **+29 Elo** (+7 à +52) |
+| Réseau v2, issu de la boucle d'apprentissage de nuit, contre le premier réseau | **+53 Elo** (+34 à +73) |
+| **Total, mesuré directement** : bot actuel contre le bot d'origine (alpha-bêta + table, évaluation à la main) | **+400 Elo** (+364 à +443) : 417 victoires, 75 nuls, 8 défaites |
 
-À 1 s par coup, l'alpha-bêta d'origine ne gagne plus que 2 parties sur 100 contre la recherche actuelle
-(même évaluation).
+Essais sans gain mesuré, gardés dans le code mais désactivés et documentés dans `NOTES.md` : tête de politique
+(`politique=`), tri des chemins pas à pas (`chemins=`), réductions des coups tardifs (`lmr=`), règles apprises
+pour deviner le bon coup (arbres de décision, « machine » qui écrit le coup), poids du résultat réel des parties
+dans les étiquettes. La résolution exacte du jeu complet est hors de portée (mesures dans `NOTES.md`) ; les petites
+variantes de 1 à 4 galets par joueur sont des nuls (`solve_variants`).
 
 ## Comment fonctionne l'IA
 
@@ -84,10 +90,13 @@ Négamax alpha-bêta avec approfondissement itératif et limite de temps, plus :
 - **table de transposition** indexée par la clé canonique (modulo symétries), qui mémorise aussi le meilleur coup ;
 - **tri des coups** aux nœuds intérieurs : gain immédiat (on s'arrête aussitôt), coup mémorisé, coups
   « killer », puis évaluation de la position obtenue ;
-- **PVS** : après le premier coup, on vérifie seulement par une fenêtre nulle que les autres ne font pas mieux.
+- **PVS** : après le premier coup, on vérifie seulement par une fenêtre nulle que les autres ne font pas mieux ;
+- **dernier étage** (enfants = feuilles, qu'on ne peut pas trier sans tout évaluer) : coups killers essayés
+  d'abord, puis cases de départ dans l'ordre d'un historique des coupures.
 
-Le tri et la PVS ne changent jamais la valeur trouvée (c'est testé) ; ils divisent le nombre de nœuds
+Ces techniques ne changent jamais la valeur trouvée (c'est testé) ; elles divisent le nombre de nœuds
 par 4 à 9 selon la profondeur. La résolution exacte des fins de partie est 7 à 12 fois plus rapide.
+`search_bench` mesure aussi la qualité du tri (coupures dès le 1er coup, comparaison à l'optimum √N).
 
 ### Les évaluations
 1. **Classique** (`bot::evaluate`) : points pour les lignes encore libres selon le nombre de sommets déjà en place.
@@ -139,13 +148,14 @@ Tous les outils prennent des bots décrits par une courte chaîne : `[nom[@ms]] 
 
 ```
 "full@1000"                                   bot par défaut, 1 s par coup
-"fort@100 nnue=weights/nnue_h64_v2.bin"          réseau NNUE, 100 ms par coup
+"fort@100 nnue=weights/nnue_h64_v2.bin"       réseau NNUE, 100 ms par coup
 "essai prof=3 tri=non pvs=non"                profondeur fixe 3, sans tri ni PVS
 "premier@1000 base=base tri=non pvs=non"      alpha-bêta seul, comme la toute première version
 ```
 
 Principales clés : `temps=`, `prof=`, `nnue=`, `eval=` (évaluation linéaire), `table=off|on|sym`,
-`tri=`, `pvs=`, `poids=` (évaluation classique). Un réglage prédéfini (`full`, `base`, `hasard`…)
+`tri=`, `pvs=`, `killer1=`, `histo=`, `poids=` (évaluation classique) ; options expérimentales désactivées par
+défaut : `lmr=`, `politique=`, `chemins=`. Un réglage prédéfini (`full`, `base`, `hasard`…)
 n'est reconnu qu'en premier mot ; ailleurs, écrire `base=NOM`. Liste complète :
 `cargo run --release --example matches -- --aide-bot`.
 
@@ -160,7 +170,13 @@ Tous se lancent avec `cargo run --release --example NOM -- [options]` (options d
 | `gen_data` | joue des parties et étiquette les positions (recherche, valeur exacte) ; reprend après interruption (`--resume`) |
 | `export_features`, `export_nnue` | convertit les positions en tableaux numpy pour Python |
 | `nnue_check` | vérifie que Rust et PyTorch calculent la même chose, mesure le coût du réseau |
+| `solve_variants` | résolution exacte depuis le début pour 1, 2, 3… galets par joueur |
+| `move_features`, `prefix_features` | exports pour apprendre des règles de choix de coups (par coup, par début de chemin) |
 | `eval_speed`, `bench`, `relabel`, `dupes` | coût des évaluations, résolution exacte, ré-étiquetage, transpositions |
+
+Scripts Python (`train/`) : `train_nnue.py` (réseau), `nnue_loop.py` (boucle de nuit du réseau), `train_policy.py`
+(tête de politique), `rules_test.py` et `prefix_test.py` (règles apprises), `train_eval.py` et `night_loop.py`
+(évaluation linéaire, première approche).
 
 Exemple, un tournoi :
 
@@ -170,7 +186,8 @@ cargo run --release --example matches -- --bot "classique@100" --bot "nnue@100 n
 
 ### Entraîner un réseau
 
-Prérequis Python : `numpy` et `torch` (GPU CUDA conseillé, ~1 min par entraînement), par exemple dans un `.venv`.
+Prérequis Python : `numpy` et `torch` (GPU CUDA conseillé, ~1 min par entraînement), plus `scikit-learn` pour les
+tests de règles, par exemple dans un `.venv`.
 
 ```sh
 # 1. Générer et étiqueter des parties (≈ 25-40 min pour 10 000 parties à 20 threads)

@@ -105,12 +105,12 @@ impl Nnue {
         }
         let u = |i: usize| u32::from_le_bytes(bytes[i..i + 4].try_into().unwrap()) as usize;
         let (hidden, hidden2) = (u(4), u(8));
-        if hidden2 != HIDDEN2 || hidden % 4 != 0 || hidden > MAX_HIDDEN {
+        if hidden2 != HIDDEN2 || !hidden.is_multiple_of(4) || hidden > MAX_HIDDEN {
             return Err(format!(
                 "{path} : couches {hidden}/{hidden2} non prises en charge (hidden multiple de 4 ≤ {MAX_HIDDEN}, hidden2 = {HIDDEN2})"
             ));
         }
-        let floats: Vec<f32> = bytes[12..].chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
+        let floats: Vec<f32> = bytes[12..].as_chunks::<4>().0.iter().map(|&c| f32::from_le_bytes(c)).collect();
         let sizes = [INPUTS * hidden, hidden, hidden2 * 2 * hidden, hidden2, hidden2, 1];
         if floats.len() != sizes.iter().sum::<usize>() {
             return Err(format!("{path} : taille inattendue (entrées {INPUTS}, couches {hidden}/{hidden2})"));
@@ -127,7 +127,7 @@ impl Nnue {
 
     /// Construit le réseau à partir des poids f32 et calcule les poids quantifiés.
     pub fn from_parts(hidden: usize, w1: Vec<f32>, b1: Vec<f32>, w2: Vec<f32>, b2: [f32; HIDDEN2], w3: [f32; HIDDEN2], b3: f32) -> Nnue {
-        assert!(hidden % 4 == 0 && hidden <= MAX_HIDDEN);
+        assert!(hidden.is_multiple_of(4) && hidden <= MAX_HIDDEN);
         assert_eq!((w1.len(), b1.len(), w2.len()), (INPUTS * hidden, hidden, HIDDEN2 * 2 * hidden));
         // Échelle de l'accumulateur : la plus fine (127 × 2^k) qui garantit l'absence de débordement
         // i16, en bornant |acc| par |biais| + la somme des 64 plus grands |poids| de chaque neurone
@@ -179,8 +179,8 @@ impl Nnue {
     #[inline]
     fn output(&self, sums: &[i32; HIDDEN2]) -> f32 {
         let mut out = self.b3;
-        for j in 0..HIDDEN2 {
-            out += self.w3[j] * (sums[j] as f32 * self.inv2[j] + self.b2[j]).clamp(0.0, 1.0);
+        for (j, &s) in sums.iter().enumerate() {
+            out += self.w3[j] * (s as f32 * self.inv2[j] + self.b2[j]).clamp(0.0, 1.0);
         }
         out
     }
@@ -249,7 +249,7 @@ fn layer2(acts: &[u8], w2q: &[i8], sums: &mut [i32; HIDDEN2]) {
 unsafe fn layer2_avx2(acts: &[u8], w2q: &[i8], sums: &mut [i32; HIDDEN2]) {
     use std::arch::x86_64::*;
     const _: () = assert!(HIDDEN2 == 32);
-    assert!(acts.len() % 4 == 0 && w2q.len() >= acts.len() * HIDDEN2);
+    assert!(acts.len().is_multiple_of(4) && w2q.len() >= acts.len() * HIDDEN2);
     // SAFETY : lectures dans `acts` et `w2q` (tailles vérifiées), écritures dans `sums` (32 i32).
     unsafe {
         let ones = _mm256_set1_epi16(1);
@@ -375,8 +375,8 @@ impl Policy {
             return Err(format!("{path} : pas une politique QPOL1"));
         }
         let hidden = u32::from_le_bytes(bytes[5..9].try_into().unwrap()) as usize;
-        let f: Vec<f32> = bytes[9..].chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
-        if hidden % 4 != 0 || hidden > MAX_HIDDEN || f.len() != 16 * 2 * hidden + 16 {
+        let f: Vec<f32> = bytes[9..].as_chunks::<4>().0.iter().map(|&c| f32::from_le_bytes(c)).collect();
+        if !hidden.is_multiple_of(4) || hidden > MAX_HIDDEN || f.len() != 16 * 2 * hidden + 16 {
             return Err(format!("{path} : taille inattendue"));
         }
         let (w, b) = f.split_at(16 * 2 * hidden);

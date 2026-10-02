@@ -5,6 +5,7 @@ use crate::features::{reach_table, LinearEval};
 use crate::game::{PathGuide, MAX_STACK};
 use crate::nnue::{Accumulator, Nnue, Policy};
 use crate::game::{Game, Move, Status, INV_SYM, LINES, RED, YELLOW};
+use std::cmp::Reverse;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -294,24 +295,22 @@ impl Bot {
         let (key, sym) = if use_tt { self.key(g) } else { (0, 0) };
         let alpha_orig = alpha;
         let mut tt_move = None;
-        if use_tt {
-            if let Some(e) = self.tt.probe(key) {
-                if self.use_tt_move && e.mv != 0 {
-                    let m = Move(e.mv).transform(INV_SYM[sym]);
-                    debug_assert!(g.check_move(m).is_ok());
-                    tt_move = Some(m);
+        if use_tt && let Some(e) = self.tt.probe(key) {
+            if self.use_tt_move && e.mv != 0 {
+                let m = Move(e.mv).transform(INV_SYM[sym]);
+                debug_assert!(g.check_move(m).is_ok());
+                tt_move = Some(m);
+            }
+            if e.depth as u32 >= depth {
+                self.tt_hits += 1;
+                let s = score_from_tt(e.score, ply);
+                match e.flag {
+                    EXACT => return s,
+                    LOWER => alpha = alpha.max(s),
+                    _ => beta = beta.min(s),
                 }
-                if e.depth as u32 >= depth {
-                    self.tt_hits += 1;
-                    let s = score_from_tt(e.score, ply);
-                    match e.flag {
-                        EXACT => return s,
-                        LOWER => alpha = alpha.max(s),
-                        _ => beta = beta.min(s),
-                    }
-                    if alpha >= beta {
-                        return s;
-                    }
+                if alpha >= beta {
+                    return s;
                 }
             }
         }
@@ -405,7 +404,7 @@ impl Bot {
                 }
                 return s;
             }
-            buf.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+            buf.sort_unstable_by_key(|e| Reverse(e.1));
             // LMR : au-delà des `lmr_full` premiers coups, les coups ordinaires (ni mémorisé ni killer) sont
             // cherchés moins profond, sauf si la recherche atteint la fin de partie (valeurs exactes préservées).
             let lmr = self.lmr && depth >= self.lmr_min_depth && depth < plies_left(g);
@@ -578,18 +577,18 @@ impl Bot {
 
         // Victoire immédiate ?
         for (m, c, _) in &root {
-            if let Some(s) = Self::terminal_score(c, 1) {
-                if s > 0 {
-                    return SearchResult {
-                        best: *m,
-                        score: s,
-                        depth: 1,
-                        nodes: 0,
-                        tt_hits: 0,
-                        elapsed: start.elapsed(),
-                        solved: true,
-                    };
-                }
+            if let Some(s) = Self::terminal_score(c, 1)
+                && s > 0
+            {
+                return SearchResult {
+                    best: *m,
+                    score: s,
+                    depth: 1,
+                    nodes: 0,
+                    tt_hits: 0,
+                    elapsed: start.elapsed(),
+                    solved: true,
+                };
             }
         }
 
@@ -631,7 +630,7 @@ impl Bot {
             best = iter_best;
             done_depth = depth;
             // Tri pour l'itération suivante : meilleurs coups d'abord.
-            root.sort_by(|a, b| b.2.cmp(&a.2));
+            root.sort_by_key(|e| Reverse(e.2));
             if best.1.abs() >= WIN_BOUND {
                 break; // gain ou perte forcé trouvé
             }
@@ -673,7 +672,7 @@ impl Bot {
         for e in list.iter_mut() {
             e.2 = Self::terminal_score(&e.1, 1).unwrap_or_else(|| -static_eval(&e.1, nnue.as_deref(), linear.as_deref(), &self.eval));
         }
-        list.sort_by(|a, b| b.2.cmp(&a.2));
+        list.sort_by_key(|e| Reverse(e.2));
         let mut done = 1;
         self.deadline = Instant::now() + self.time_limit;
         for depth in 2..=self.max_depth.min(plies_left(g)) {
@@ -694,7 +693,7 @@ impl Bot {
             for (e, s) in list.iter_mut().zip(scores) {
                 e.2 = s;
             }
-            list.sort_by(|a, b| b.2.cmp(&a.2));
+            list.sort_by_key(|e| Reverse(e.2));
             done = depth;
         }
         (done, list)

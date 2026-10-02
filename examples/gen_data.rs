@@ -336,10 +336,10 @@ fn main() {
     let args = parse_args();
     let done_path = format!("{}.done", args.out);
     let stats_path = format!("{}.stats", args.out);
-    if let Some(dir) = std::path::Path::new(&args.out).parent() {
-        if !dir.as_os_str().is_empty() {
-            std::fs::create_dir_all(dir).expect("création du dossier de sortie");
-        }
+    if let Some(dir) = std::path::Path::new(&args.out).parent()
+        && !dir.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(dir).expect("création du dossier de sortie");
     }
 
     // Reprise : parties terminées, et lignes du CSV qui leur appartiennent (le reste est jeté).
@@ -359,11 +359,12 @@ fn main() {
                     writeln!(w, "{line}").unwrap();
                     continue;
                 }
-                if let Some((game, pos)) = parse_row(&line) {
-                    if done_games.contains(&game) && seen.insert(pos.canonical_key()) {
-                        writeln!(w, "{line}").unwrap();
-                        kept_rows += 1;
-                    }
+                if let Some((game, pos)) = parse_row(&line)
+                    && done_games.contains(&game)
+                    && seen.insert(pos.canonical_key())
+                {
+                    writeln!(w, "{line}").unwrap();
+                    kept_rows += 1;
                 }
             }
         }

@@ -34,11 +34,12 @@ const FEATURES: [&str; 25] = [
 /// direction prise étant `prev` (4 = aucune).
 fn reach_table() -> Vec<[[u16; 32]; 5]> {
     let mut t = vec![[[0u16; 32]; 5]; 16];
-    for sq in 0..16 {
+    for (sq, row) in t.iter_mut().enumerate() {
         for prev in 0..5u8 {
-            t[sq][prev as usize][0] = 1 << sq;
+            let slots = &mut row[prev as usize];
+            slots[0] = 1 << sq;
             let mut states = vec![(sq, prev)];
-            for k in 1..32 {
+            for slot in slots.iter_mut().skip(1) {
                 let mut next = Vec::new();
                 let mut seen = [[false; 4]; 16];
                 for &(s, last) in &states {
@@ -51,7 +52,7 @@ fn reach_table() -> Vec<[[u16; 32]; 5]> {
                         next.push((n as usize, d));
                     }
                 }
-                t[sq][prev as usize][k] = next.iter().fold(0, |m, &(s, _)| m | 1 << s);
+                *slot = next.iter().fold(0, |m, &(s, _)| m | 1 << s);
                 states = next;
             }
         }

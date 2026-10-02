@@ -296,8 +296,8 @@ impl LinearEval {
             .map(|left| {
                 let phi = (1.0 - left as f32 / self.total_plies).clamp(0.0, 1.0);
                 let mut w = [0f32; NUM_FEATURES];
-                for i in 0..NUM_FEATURES {
-                    w[i] = (self.w_open[i] * (1.0 - phi) + self.w_end[i] * phi) * self.scale;
+                for (i, wi) in w.iter_mut().enumerate() {
+                    *wi = (self.w_open[i] * (1.0 - phi) + self.w_end[i] * phi) * self.scale;
                 }
                 w
             })

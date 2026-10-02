@@ -184,6 +184,9 @@ impl Move {
     pub fn square(self) -> u8 { (self.0 & 0xF) as u8 }
     #[inline]
     pub fn len(self) -> u32 { ((self.0 >> 4) & 0x1F) as u32 }
+    /// Coup vide (aucune direction) : jamais un coup légal, sert de valeur « aucun coup ».
+    #[inline]
+    pub fn is_empty(self) -> bool { self.len() == 0 }
     #[inline]
     pub fn dir(self, i: u32) -> u8 { ((self.0 >> (9 + 2 * i)) & 3) as u8 }
     #[inline]
@@ -368,8 +371,8 @@ impl Game {
     #[inline]
     fn xor_hash(&mut self, sq: usize, level: u8, color: u8) {
         let z = &ZOBRIST[sq][level as usize * 3 + color as usize];
-        for s in 0..8 {
-            self.hash[s] ^= z[s];
+        for (h, k) in self.hash.iter_mut().zip(z) {
+            *h ^= k;
         }
     }
 
@@ -388,10 +391,9 @@ impl Game {
     /// Position image par la symétrie `s` (utile pour les tests).
     pub fn transform(&self, s: usize) -> Game {
         let mut g = Game { heights: [0; 16], stacks: [0; 16], tops_red: 0, tops_yellow: 0, tops_neutral: 0, hash: [0; 8], ..*self };
-        for sq in 0..16 {
-            let dst = SYM[s][sq] as usize;
+        for (sq, &dst) in SYM[s].iter().enumerate() {
             for i in 0..self.heights[sq] {
-                g.push_stone(dst, self.stone(sq, i));
+                g.push_stone(dst as usize, self.stone(sq, i));
             }
         }
         g
@@ -453,9 +455,11 @@ impl Game {
     }
 
     #[inline]
+    // Faux positif de clippy (1.98) : sa suggestion `LINES.contains(&(bb & m))` utiliserait `m` hors de la fermeture.
+    #[allow(clippy::manual_contains)]
     pub fn has_won(&self, player: u8) -> bool {
         let bb = self.tops(player);
-        LINES.iter().any(|&m| bb & m == m)
+        LINES.iter().any(|&m| (bb & m) == m)
     }
 
     /// Statut de la position (à appeler juste après un coup ; le « mover » est `player ^ 1`).
@@ -812,13 +816,13 @@ mod tests {
         let mut g = Game::new();
         for i in 0..6 {
             let moves = g.legal_moves();
-            for s in 0..8 {
+            for (s, &inv) in INV_SYM.iter().enumerate() {
                 let t = g.transform(s);
                 for &m in &moves {
                     let tm = m.transform(s);
                     t.check_move(tm).unwrap();
                     assert_eq!(t.play(tm), g.play(m).transform(s));
-                    assert_eq!(tm.transform(INV_SYM[s]), m);
+                    assert_eq!(tm.transform(inv), m);
                 }
             }
             g = g.play(moves[(i * 11) % moves.len()]);
