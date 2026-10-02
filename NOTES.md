@@ -413,3 +413,12 @@ décision prof. 3 63,3, prof. 6 (47 feuilles) **48,5**, prof. 12 61,4 (sur-appre
 sur la position après le coup (il faut générer tous les coups pour l'appliquer). Une formule SAT minimale de taille
 comparable ne devrait pas faire nettement mieux sur ces caractéristiques. `data/rules/move_features.csv` (format CSV,
 entiers) peut servir à des outils externes (SAT, acquisition de contraintes).
+- **« Machine » qui écrit le coup symbole par symbole (2026-10-02, `examples/prefix_features.rs`, `train/prefix_test.py`)** :
+  arbre des débuts de chemins de 1 500 positions (586 k nœuds, ~218 coups/position) ; à chaque état (plateau + début du coup :
+  galets déposés, couleurs restant en main, lignes et sommets courants, le dernier galet peut-il encore compléter/bloquer),
+  les symboles suivants sont ordonnés par un arbre de décision appris. Coups écrits avant le meilleur (rang moyen, test) :
+  ordre actuel 101,9 ; règle à la main « dernier galet peut compléter » 101,6 ; machine apprise triée par probabilité
+  95 à 110 ; **triée par probabilité / taille de la branche** (ordre optimal) 95 (prof. 2-4), 85,5 (prof. 6), **79,7 (prof. 12)** ;
+  référence idéale (meilleure note du réseau dans la branche, tout évaluer) 55,2.
+  ⇒ −22 % au mieux, avec 626 règles : du même ordre que ce que l'historique apporte déjà dans la recherche ; même l'idéal
+  statique reste à 55 (le meilleur coup d'une recherche prof. 4 n'est pas celui de la note immédiate). Pas intégré.
