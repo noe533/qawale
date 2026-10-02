@@ -9,9 +9,13 @@ Dernière mise à jour : 2026-10-02.
 (réseau NNUE quantifié, sections « NNUE » plus bas) : **+218 Elo contre l'évaluation classique à 100 ms**. Recherche :
 alpha-bêta + table (symétries) + tri des coups (évaluation des filles) + killers + PVS ; au dernier étage (enfants = feuilles,
 non triés) killers + historique par case de départ (+29 Elo). README.md = présentation pour un nouveau venu.
-**Prochaine étape** : (1) lancer la boucle NNUE `train/nnue_loop.py` (nuit) ; (2) politique apprise sur la case de départ
-pour le dernier étage (encore 15 × √N nœuds, rang moyen ~20 du coup qui coupe) ; (3) LMR ; (4) réseau par phase de jeu,
-réseau plus grand une fois plus de données ; (5, optionnel) gestion du temps sur une réserve par partie (ne pas commencer
+**Bilan du 2 octobre** : boucle NNUE (nuit) ⇒ réseau v2 (+53) ; total mesuré directement contre le bot d'avant la revue :
+**+400 Elo**. Essais **sans gain** (code gardé, désactivé) : politique « case de départ » (`politique=`), tri des chemins
+(`chemins=`), LMR (`lmr=` : +1 demi-coup affiché à 1 s, mais Elo ≈ 0). Constat : au dernier étage le coup qui coupe n'a pas de
+signature simple ; la recherche est saturée côté tri, les gains viennent de l'évaluation.
+**Prochaine étape** : (1) casser le plafond de la boucle NNUE (étiquettes plus profondes, plus de poids au résultat réel) ;
+(2) enfant moins cher (couche 2 à 16, VNNI) ; (3) test d'une règle apprise (arbre de décision / formule SAT) pour générer
+d'abord les bons coups ; (4) réseau par phase de jeu ; (5, optionnel) gestion du temps sur une réserve par partie (ne pas commencer
 un palier qu'on ne finira pas, plus de temps sur les coups critiques, jouer vite les coups évidents) : demande des tournois
 au temps par partie dans `matches`.
 Historique : l'évaluation linéaire (`features.rs`) jugeait mieux que la classique mais restait trop lente au temps.
