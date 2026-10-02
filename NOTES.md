@@ -384,3 +384,18 @@ Rust : `nnue::Policy` (quantifiée, même noyau que la couche 2, **33 ns/appel**
   ni la case d'arrivée du dernier galet (heuristique) ne le prédisent mieux que l'historique. Prédire l'évaluation d'un enfant
   moins cher que l'évaluer (~130 ns, dont 33 ns de génération incompressible) semble difficile. Pistes plus prometteuses :
   réduire le coût par enfant (couche 2 plus petite, VNNI), élaguer plutôt que trier (LMR), meilleures étiquettes.
+
+## LMR (2026-10-02, option `lmr=`, désactivé par défaut)
+Aux nœuds triés : au-delà des `lmr_n` premiers coups (ni mémorisé ni killer), recherche réduite d'1 demi-coup (2 au-delà de
+`lmr_tard` si prof. restante ≥ 4) en fenêtre nulle, puis recherche normale si le coup dépasse alpha ; jamais quand la recherche
+atteint la fin de partie (résolution exacte intacte). Tournois contre la version actuelle (réseau v2) :
+| réglage | prof. moyenne (LMR / actuel) | Elo |
+|---|---|---|
+| A : n 3, tard 12, prof ≥ 3 — 100 ms, 500 parties | 3,4 / 3,1 | +3 (−18 à +24) |
+| B : idem + prof 2 (coups tardifs seulement évalués) — 100 ms | 3,6 / 3,0 | +7 (−15 à +29) |
+| C : n 2, tard 6 — 100 ms | 3,4 / 3,0 | −13 (−34 à +9) |
+| B — **1 s**, 300 parties | **4,9 / 3,8** | −14 (−31 à +3) |
+⇒ LMR fait gagner jusqu'à **+1,1 demi-coup affiché**, mais aucune force : les coups « tardifs » ratés compensent. Dans Qawale,
+l'ordre aux nœuds intérieurs (70-87 % au 1er coup) n'est pas assez sûr pour réduire ; les coups décisifs (préparer une menace
+2 coups plus loin) sont souvent mal classés par l'évaluation statique. Piste éventuelle : ne réduire que les coups dont
+l'évaluation est très en dessous du meilleur (réduction selon l'écart plutôt que selon le rang).

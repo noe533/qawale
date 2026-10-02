@@ -216,6 +216,13 @@ pub struct Bot {
     /// Au dernier étage : ordonner les chemins pas à pas (`path_guide`). Désactivé par défaut : aucun gain
     /// mesuré (rang du coup qui coupe inchangé), et ~10 % plus lent.
     pub path_order: bool,
+    /// LMR (réductions des coups tardifs) aux nœuds triés : coups au-delà des `lmr_full` premiers cherchés
+    /// 1 demi-coup moins profond (2 au-delà de `lmr_late` si la profondeur restante ≥ 4), à partir d'une
+    /// profondeur restante `lmr_min_depth` ; recherche normale si le coup surprend. Change le jeu : à juger par tournoi.
+    pub lmr: bool,
+    pub lmr_full: usize,
+    pub lmr_late: usize,
+    pub lmr_min_depth: u32,
     tt: Tt,
     /// Historique par joueur au trait et case de départ du coup qui a provoqué une coupure
     /// (pondéré par profondeur²), remis à zéro à chaque recherche.
@@ -244,7 +251,7 @@ impl Bot {
 
     pub fn with_tt(time_limit: Duration, max_depth: u32, tt_mode: TtMode, tt_mb: usize) -> Bot {
         let tt = Tt::new(if tt_mode == TtMode::Off { 0 } else { tt_mb });
-        Bot { time_limit, max_depth, tt_mode, tt_min_depth: 1, use_tt_move: true, iterative_solve: true, eval: EvalParams::default(), linear: None, nnue: None, policy: None, ordering: true, pvs: true, leaf_killers: true, history: true, path_order: false, tt, hist: [[0; 16]; 2], killers: vec![[Move(0); 2]; MAX_PLY], move_bufs: vec![Vec::new(); MAX_PLY], nodes: 0, tt_hits: 0, cut_stats: [[0; 6]; 8], deadline: Instant::now(), stopped: false }
+        Bot { time_limit, max_depth, tt_mode, tt_min_depth: 1, use_tt_move: true, iterative_solve: true, eval: EvalParams::default(), linear: None, nnue: None, policy: None, ordering: true, pvs: true, leaf_killers: true, history: true, path_order: false, lmr: false, lmr_full: 3, lmr_late: 12, lmr_min_depth: 3, tt, hist: [[0; 16]; 2], killers: vec![[Move(0); 2]; MAX_PLY], move_bufs: vec![Vec::new(); MAX_PLY], nodes: 0, tt_hits: 0, cut_stats: [[0; 6]; 8], deadline: Instant::now(), stopped: false }
     }
 
     /// Clé de table et symétrie menant au repère dans lequel les coups sont stockés.
@@ -320,10 +327,17 @@ impl Bot {
         let net = self.nnue.clone();
         let mut acc = net.as_deref().map(|n| Accumulator::new(n, g));
         let mut count = 0u64; // coups essayés (rang du coup qui provoque une coupure)
-        let mut visit = |this: &mut Self, m: Move, child: &Game, alpha: &mut i32, leaf: Option<&Accumulator>| {
+        // `reduce` > 0 : LMR, le coup (tardif dans l'ordre) est d'abord cherché moins profond en fenêtre nulle ;
+        // s'il surprend (fait mieux qu'alpha), il est recherché normalement.
+        let mut visit = |this: &mut Self, m: Move, child: &Game, alpha: &mut i32, leaf: Option<&Accumulator>, reduce: u32| {
             count += 1;
-            let score = match Self::terminal_score(child, ply + 1) {
+            let terminal = Self::terminal_score(child, ply + 1);
+            let reduced = (terminal.is_none() && reduce > 0)
+                .then(|| -this.negamax(child, depth - 1 - reduce, -*alpha - 1, -*alpha, ply + 1));
+            let score = match terminal {
                 Some(s) => s,
+                // Recherche réduite : ne fait pas mieux qu'alpha ⇒ on s'en tient là.
+                None if reduced.is_some_and(|s| this.stopped || s <= *alpha) => reduced.unwrap(),
                 // Enfant feuille évalué par l'accumulateur (équivaut à `negamax(child, 0)`).
                 None if depth == 1 && leaf.is_some() => {
                     this.nodes += 1;
@@ -392,8 +406,17 @@ impl Bot {
                 return s;
             }
             buf.sort_unstable_by(|a, b| b.1.cmp(&a.1));
-            for &(m, _) in &buf {
-                if !visit(self, m, &g.play(m), &mut alpha, None) {
+            // LMR : au-delà des `lmr_full` premiers coups, les coups ordinaires (ni mémorisé ni killer) sont
+            // cherchés moins profond, sauf si la recherche atteint la fin de partie (valeurs exactes préservées).
+            let lmr = self.lmr && depth >= self.lmr_min_depth && depth < plies_left(g);
+            let (lmr_full, lmr_late) = (self.lmr_full, self.lmr_late);
+            for (i, &(m, order)) in buf.iter().enumerate() {
+                let reduce = if lmr && i >= lmr_full && order < ORDER_KILLER {
+                    if i >= lmr_late && depth >= 4 { 2 } else { 1 }
+                } else {
+                    0
+                };
+                if !visit(self, m, &g.play(m), &mut alpha, None, reduce) {
                     break;
                 }
             }
@@ -406,13 +429,13 @@ impl Bot {
             let mut go_on = true;
             if let Some(tm) = tt_move {
                 tried[0] = tm;
-                go_on = visit(self, tm, &g.play(tm), &mut alpha, None);
+                go_on = visit(self, tm, &g.play(tm), &mut alpha, None, 0);
             }
             if self.leaf_killers {
                 for (i, k) in self.killers[ply as usize].into_iter().enumerate() {
                     if go_on && k != Move(0) && !tried.contains(&k) && g.check_move(k).is_ok() {
                         tried[1 + i] = k;
-                        go_on = visit(self, k, &g.play(k), &mut alpha, None);
+                        go_on = visit(self, k, &g.play(k), &mut alpha, None, 0);
                         self.cut_stats[0][0] += 1; // [0] inutilisé ailleurs : killers essayés / ayant coupé
                         self.cut_stats[0][1] += !go_on as u64;
                     }
@@ -476,7 +499,7 @@ impl Bot {
                         within = 0;
                     }
                     within += 1;
-                    let cont = visit(self, m, child, &mut alpha, a.as_ref());
+                    let cont = visit(self, m, child, &mut alpha, a.as_ref(), 0);
                     if !cont {
                         cut_at = Some((before, within));
                     }

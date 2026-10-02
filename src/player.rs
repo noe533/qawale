@@ -96,6 +96,8 @@ pub struct BotSpec {
     pub leaf_killers: bool,
     pub history: bool,
     pub path_order: bool,
+    /// LMR : (activé, coups complets, coups « très tardifs », profondeur restante minimale).
+    pub lmr: (bool, usize, usize, u32),
     pub eval: EvalParams,
     /// Évaluation apprise chargée depuis un fichier (chemin, poids).
     pub eval_file: Option<(String, Arc<LinearEval>)>,
@@ -129,6 +131,9 @@ Description d'un bot : [nom[@ms]] [clé=valeur]...
   pvs=      oui | non               (recherche à fenêtre nulle après le premier coup, défaut oui)
   killer1=  oui | non               (dernier étage : essayer les coups killers d'abord, défaut oui)
   histo=    oui | non               (dernier étage : cases de départ selon l'historique, défaut oui)
+  lmr=      oui | non               (réductions des coups tardifs, défaut non) ; réglages : lmr_n= (coups
+            cherchés en entier, défaut 3), lmr_tard= (au-delà : réduction de 2, défaut 12), lmr_prof= (profondeur
+            restante minimale, défaut 3 ; 2 = jusqu'à remplacer la recherche des coups tardifs par leur évaluation)
   chemins=  oui | non               (dernier étage : chemins ordonnés pas à pas vers la meilleure case d'arrivée, défaut non : sans gain mesuré)
   poids=    a,b,c,d                 poids d'une ligne libre avec 0..3 sommets (défaut 0,1,6,40)
   surface=  bonus par sommet contrôlé (défaut 2)
@@ -153,6 +158,7 @@ impl Default for BotSpec {
             leaf_killers: true,
             history: true,
             path_order: false,
+            lmr: (false, 3, 12, 3),
             eval: EvalParams::default(),
             eval_file: None,
             nnue_file: None,
@@ -229,6 +235,10 @@ impl BotSpec {
             "killer1" => self.leaf_killers = parse_bool(v)?,
             "histo" | "history" => self.history = parse_bool(v)?,
             "chemins" | "paths" => self.path_order = parse_bool(v)?,
+            "lmr" => self.lmr.0 = parse_bool(v)?,
+            "lmr_n" => self.lmr.1 = parse_num(k, v)?,
+            "lmr_tard" => self.lmr.2 = parse_num(k, v)?,
+            "lmr_prof" => self.lmr.3 = parse_num(k, v)?,
             "poids" | "weights" => {
                 let w: Vec<i32> = v.split(',').map(|x| parse_num(k, x)).collect::<Result<_, _>>()?;
                 self.eval.line_weight = w.try_into().map_err(|_| "poids= : 4 valeurs attendues (a,b,c,d)".to_string())?;
@@ -281,6 +291,7 @@ impl BotSpec {
         bot.leaf_killers = self.leaf_killers;
         bot.history = self.history;
         bot.path_order = self.path_order;
+        (bot.lmr, bot.lmr_full, bot.lmr_late, bot.lmr_min_depth) = self.lmr;
         bot.eval = self.eval;
         bot.linear = self.eval_file.as_ref().map(|(_, e)| e.clone());
         bot.nnue = self.nnue_file.as_ref().map(|(_, n)| n.clone());
