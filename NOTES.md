@@ -403,3 +403,13 @@ atteint la fin de partie (résolution exacte intacte). Tournois contre la versio
 l'ordre aux nœuds intérieurs (70-87 % au 1er coup) n'est pas assez sûr pour réduire ; les coups décisifs (préparer une menace
 2 coups plus loin) sont souvent mal classés par l'évaluation statique. Piste éventuelle : ne réduire que les coups dont
 l'évaluation est très en dessous du meilleur (réduction selon l'écart plutôt que selon le rang).
+
+## Règle apprise pour désigner les bons coups (2026-10-02, `examples/move_features.rs`, `train/rules_test.py`)
+5 000 positions (boucle NNUE it10), ~202 coups distincts par position, 49 caractéristiques lisibles par coup (lignes, menaces
+atteignables, sommets et leurs variations, hauteur soulevée, case d'arrivée, gain/perte immédiats) ; cible = meilleur coup
+de la recherche prof. 4. Rang moyen du meilleur coup (1 000 positions de test) : ordre du générateur 91,6 ; arbre de
+décision prof. 3 63,3, prof. 6 (47 feuilles) **48,5**, prof. 12 61,4 (sur-apprentissage) ; **évaluation du réseau 16,8**.
+⇒ Une règle courte divise le rang par ~2 par rapport à l'ordre fixe mais reste ~3× moins bonne que le réseau ; et elle porte
+sur la position après le coup (il faut générer tous les coups pour l'appliquer). Une formule SAT minimale de taille
+comparable ne devrait pas faire nettement mieux sur ces caractéristiques. `data/rules/move_features.csv` (format CSV,
+entiers) peut servir à des outils externes (SAT, acquisition de contraintes).
