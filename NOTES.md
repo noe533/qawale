@@ -359,3 +359,20 @@ Depuis la position initiale, table 512 Mo, recherche actuelle (évaluation class
 - Données disponibles pour la politique : 14 × ~136 k positions avec `best_move` (data/nnue_loop/itNN/positions.csv).
 - Pistes pour casser le plafond : étiquettes plus profondes (prof. 5-6 sur moins de parties), plus de diversité
   (ouvertures aléatoires plus longues, epsilon), cible mêlant davantage le résultat réel des parties (lam < 0,9).
+- **Bilan direct (2026-10-02, `data/nnue/total_depuis_depart.txt`)** : bot actuel (`nnue=weights/nnue_h64_v2.bin`) contre le bot
+  d'avant la revue (`tri=non pvs=non killer1=non histo=non`, évaluation classique), 100 ms, 500 parties :
+  **+400 Elo (+364 à +443)**, 417V 75N 8D. Somme des gains mesurés étape par étape : ≈ +440 (cohérent).
+
+## Politique « case de départ » (2026-10-02)
+`train/train_policy.py` : tête linéaire 2×64 → 16 sur l'accumulateur gelé de `nnue_h64_v2.bin`, cible = case de départ du
+`best_move` (prof. 4) des 1,9 M positions de la boucle NNUE, augmentation par symétries, 10 époques en 10 s (GPU).
+Rust : `nnue::Policy` (quantifiée, même noyau que la couche 2, **33 ns/appel**, = PyTorch à 6e-6), option `politique=FICHIER`
+(avec le `nnue=` d'origine) : au dernier étage, cases de départ dans l'ordre de la politique au lieu de l'historique.
+- Hors ligne (validation) : bonne case 1re **33 %** (ordre fixe a1, b1… 12 %), rang moyen parmi les cases occupées 3,25 (5,06).
+- Dans la recherche : **aucun gain** (nœuds ×0,99 à prof. 3 et 4, rang moyen du coup qui coupe inchangé).
+- Diagnostic (`search_bench`, coupures pendant la génération au dernier étage) : coups essayés depuis les cases précédentes /
+  rang du coup dans sa case : ordre fixe 32,4 / 17,1 ; historique 18,4 / 18,5 ; politique 16,6 / 19,4 (prof. 3) ;
+  prof. 4 : 12,9 / 7,9 ; 7,0 / 8,5 ; 4,9 / 9,1. La politique choisit de meilleures cases, mais leurs coups gagnants sont plus
+  loin dans la case : ça s'annule. **Désormais, au moins la moitié du gaspillage est à l'intérieur d'une case** (ordre des
+  chemins) ⇒ prochaine piste : trier les directions dans le parcours des chemins (au moins le dernier pas, qui pose le galet
+  du joueur au sommet de la case d'arrivée).

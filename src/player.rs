@@ -6,7 +6,7 @@
 
 use crate::bot::{Bot, EvalParams, TtMode};
 use crate::features::LinearEval;
-use crate::nnue::Nnue;
+use crate::nnue::{Nnue, Policy};
 use std::sync::Arc;
 use crate::game::{Game, Move};
 use std::time::Duration;
@@ -20,7 +20,7 @@ pub struct SearchInfo {
     /// La recherche a vu jusqu'à la fin de partie (score exact).
     pub solved: bool,
     /// Qualité du tri (voir `Bot::cut_stats`).
-    pub cuts: [[u64; 4]; 8],
+    pub cuts: [[u64; 6]; 8],
 }
 
 pub trait Player: Send {
@@ -100,6 +100,8 @@ pub struct BotSpec {
     pub eval_file: Option<(String, Arc<LinearEval>)>,
     /// Réseau NNUE chargé depuis un fichier (chemin, réseau) ; prioritaire sur `eval_file`.
     pub nnue_file: Option<(String, Arc<Nnue>)>,
+    /// Politique « case de départ » (chemin, politique), posée sur le réseau `nnue_file`.
+    pub policy_file: Option<(String, Arc<Policy>)>,
 }
 
 /// Réglages prédéfinis, appliqués par-dessus le bot par défaut (= `full`).
@@ -130,6 +132,7 @@ Description d'un bot : [nom[@ms]] [clé=valeur]...
   surface=  bonus par sommet contrôlé (défaut 2)
   eval=     fichier de poids appris (ex. data/eval_linear.txt) ; « classique » = évaluation d'origine
   nnue=     fichier de réseau (train/train_nnue.py), prioritaire sur eval=
+  politique= fichier de politique « case de départ » (train/train_policy.py), avec le nnue= sur lequel elle a été apprise
   base=     applique un réglage prédéfini
 Exemples : \"full@1000\"   \"essai base=full poids=0,2,12,100 prof=4\"   \"hasard\"";
 
@@ -150,6 +153,7 @@ impl Default for BotSpec {
             eval: EvalParams::default(),
             eval_file: None,
             nnue_file: None,
+            policy_file: None,
         }
     }
 }
@@ -227,6 +231,7 @@ impl BotSpec {
             }
             "surface" => self.eval.surface = parse_num(k, v)?,
             "nnue" => self.nnue_file = Some((v.to_string(), Arc::new(Nnue::load(v)?))),
+            "politique" | "policy" => self.policy_file = Some((v.to_string(), Arc::new(Policy::load(v)?))),
             "eval" => {
                 self.eval_file = if v == "classique" { None } else { Some((v.to_string(), Arc::new(LinearEval::load(v)?))) };
             }
@@ -274,6 +279,11 @@ impl BotSpec {
         bot.eval = self.eval;
         bot.linear = self.eval_file.as_ref().map(|(_, e)| e.clone());
         bot.nnue = self.nnue_file.as_ref().map(|(_, n)| n.clone());
+        bot.policy = self.policy_file.as_ref().map(|(path, p)| {
+            let h = bot.nnue.as_ref().map(|n| n.hidden);
+            assert!(h == Some(p.hidden), "politique {path} : il faut aussi nnue= avec un réseau de même taille ({} ≠ {h:?})", p.hidden);
+            p.clone()
+        });
         bot
     }
 
@@ -292,7 +302,12 @@ impl BotSpec {
                 self.tt,
                 if self.tt_move { " + coup mémorisé" } else { "" },
                 match (&self.nnue_file, &self.eval_file) {
-                    (Some((path, n)), _) => format!("réseau {path} ({}/{})", n.hidden, n.hidden2),
+                    (Some((path, n)), _) => format!(
+                        "réseau {path} ({}/{}){}",
+                        n.hidden,
+                        n.hidden2,
+                        self.policy_file.as_ref().map(|(p, _)| format!(" + politique {p}")).unwrap_or_default()
+                    ),
                     (None, Some((path, _))) => format!("évaluation apprise {path}"),
                     (None, None) => format!("poids {:?}, surface {}", self.eval.line_weight, self.eval.surface),
                 }

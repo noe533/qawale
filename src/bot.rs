@@ -2,7 +2,7 @@
 //! et table de transposition (optionnellement modulo les 8 symétries du plateau).
 
 use crate::features::LinearEval;
-use crate::nnue::{Accumulator, Nnue};
+use crate::nnue::{Accumulator, Nnue, Policy};
 use crate::game::{Game, Move, Status, INV_SYM, LINES, RED, YELLOW};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -164,6 +164,9 @@ pub struct Bot {
     pub linear: Option<Arc<LinearEval>>,
     /// Réseau NNUE ; si présent, remplace les deux autres évaluations.
     pub nnue: Option<Arc<Nnue>>,
+    /// Politique « case de départ » posée sur l'accumulateur de `nnue` (même première couche) :
+    /// ordonne les cases de départ au dernier étage, à la place de l'historique.
+    pub policy: Option<Arc<Policy>>,
     /// Trier les coups des nœuds intérieurs (gain immédiat, coup mémorisé, coups « killer »,
     /// puis évaluation de la position obtenue, apprise si chargée).
     pub ordering: bool,
@@ -186,7 +189,9 @@ pub struct Bot {
     /// Qualité du tri, par profondeur restante (indice min(prof., 7)) :
     /// [nœuds intérieurs, coupures bêta, coupures dès le 1er coup essayé, somme des rangs du coup coupant].
     /// (Les coupures directes par la table, avant tout coup, ne sont pas comptées.)
-    pub cut_stats: [[u64; 4]; 8],
+    /// Ligne 0 (diagnostic du dernier étage) : [killers essayés, killers ayant coupé, —, coupures pendant la
+    /// génération, somme des coups essayés depuis les cases précédentes, somme des rangs dans la case du coup].
+    pub cut_stats: [[u64; 6]; 8],
     deadline: Instant,
     stopped: bool,
 }
@@ -199,7 +204,7 @@ impl Bot {
 
     pub fn with_tt(time_limit: Duration, max_depth: u32, tt_mode: TtMode, tt_mb: usize) -> Bot {
         let tt = Tt::new(if tt_mode == TtMode::Off { 0 } else { tt_mb });
-        Bot { time_limit, max_depth, tt_mode, tt_min_depth: 1, use_tt_move: true, iterative_solve: true, eval: EvalParams::default(), linear: None, nnue: None, ordering: true, pvs: true, leaf_killers: true, history: true, tt, hist: [[0; 16]; 2], killers: vec![[Move(0); 2]; MAX_PLY], move_bufs: vec![Vec::new(); MAX_PLY], nodes: 0, tt_hits: 0, cut_stats: [[0; 4]; 8], deadline: Instant::now(), stopped: false }
+        Bot { time_limit, max_depth, tt_mode, tt_min_depth: 1, use_tt_move: true, iterative_solve: true, eval: EvalParams::default(), linear: None, nnue: None, policy: None, ordering: true, pvs: true, leaf_killers: true, history: true, tt, hist: [[0; 16]; 2], killers: vec![[Move(0); 2]; MAX_PLY], move_bufs: vec![Vec::new(); MAX_PLY], nodes: 0, tt_hits: 0, cut_stats: [[0; 6]; 8], deadline: Instant::now(), stopped: false }
     }
 
     /// Clé de table et symétrie menant au repère dans lequel les coups sont stockés.
@@ -375,9 +380,27 @@ impl Bot {
             }
             if go_on {
                 // Cases de départ dans l'ordre de l'historique : d'abord celles qui ont souvent coupé.
-                let use_history = self.history;
+                // Ou, si une politique apprise est chargée (avec le réseau), dans l'ordre de ses scores.
+                let policy_scores = match (&self.policy, &acc) {
+                    (Some(p), Some(a)) => Some(a.policy(p, g.player)),
+                    _ => None,
+                };
+                let use_history = self.history || policy_scores.is_some();
                 let (mut sqs, mut n) = ([0u8; 16], 0);
-                if use_history {
+                if let Some(sc) = policy_scores {
+                    let mut occ = g.occupied();
+                    while occ != 0 {
+                        let sq = occ.trailing_zeros() as u8;
+                        occ &= occ - 1;
+                        let mut j = n;
+                        while j > 0 && sc[sqs[j - 1] as usize] < sc[sq as usize] {
+                            sqs[j] = sqs[j - 1];
+                            j -= 1;
+                        }
+                        sqs[j] = sq;
+                        n += 1;
+                    }
+                } else if use_history {
                     let hist = &self.hist[g.player as usize];
                     let mut occ = g.occupied();
                     while occ != 0 {
@@ -392,11 +415,34 @@ impl Bot {
                         n += 1;
                     }
                 }
-                let mut rest = |m: Move, child: &Game, a: &Option<Accumulator>| tried.contains(&m) || visit(self, m, child, &mut alpha, a.as_ref());
+                // Diagnostic : pour le coup qui coupe, coups essayés depuis les cases précédentes et rang dans sa case.
+                let (mut cur_sq, mut within, mut before, mut cut_at) = (u8::MAX, 0u64, 0u64, None);
+                let mut rest = |m: Move, child: &Game, a: &Option<Accumulator>| {
+                    if tried.contains(&m) {
+                        return true;
+                    }
+                    if m.square() != cur_sq {
+                        cur_sq = m.square();
+                        before += within;
+                        within = 0;
+                    }
+                    within += 1;
+                    let cont = visit(self, m, child, &mut alpha, a.as_ref());
+                    if !cont {
+                        cut_at = Some((before, within));
+                    }
+                    cont
+                };
                 if use_history {
                     g.for_each_child_ordered_obs(&sqs[..n], &mut acc, &mut rest);
                 } else {
                     g.for_each_child_obs(&mut acc, &mut rest);
+                }
+                if let (Some((b, w)), false) = (cut_at, self.stopped) {
+                    let st = &mut self.cut_stats[0];
+                    st[3] += 1;
+                    st[4] += b;
+                    st[5] += w;
                 }
             }
         }
@@ -441,7 +487,7 @@ impl Bot {
         self.killers.fill([Move(0); 2]);
         self.nodes = 0;
         self.tt_hits = 0;
-        self.cut_stats = [[0; 4]; 8];
+        self.cut_stats = [[0; 6]; 8];
         self.hist = [[0; 16]; 2];
 
         // Coups racine, dédoublonnés par position résultante (à symétrie près si activé).

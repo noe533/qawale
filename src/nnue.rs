@@ -190,8 +190,9 @@ impl Nnue {
         Accumulator::new(self, g).forward(g.player)
     }
 
-    /// Sortie brute en f32, calcul direct sans quantification (contrôle contre PyTorch).
-    pub fn forward_f32(&self, g: &Game) -> f32 {
+    /// Activations de la première couche en f32 (sans quantification) : [joueur au trait, adversaire],
+    /// après ReLU bornée. Pour les contrôles contre PyTorch.
+    pub fn activations_f32(&self, g: &Game) -> Vec<f32> {
         let h = self.hidden;
         let mut acc = [self.b1.clone(), self.b1.clone()];
         for (k, me) in [g.player, g.player ^ 1].into_iter().enumerate() {
@@ -201,7 +202,13 @@ impl Nnue {
                 }
             });
         }
-        let z: Vec<f32> = acc[0].iter().chain(&acc[1]).map(|a| a.clamp(0.0, 1.0)).collect();
+        acc[0].iter().chain(&acc[1]).map(|a| a.clamp(0.0, 1.0)).collect()
+    }
+
+    /// Sortie brute en f32, calcul direct sans quantification (contrôle contre PyTorch).
+    pub fn forward_f32(&self, g: &Game) -> f32 {
+        let h = self.hidden;
+        let z = self.activations_f32(g);
         let mut out = self.b3;
         for j in 0..HIDDEN2 {
             let s: f32 = self.b2[j] + z.iter().zip(&self.w2[j * 2 * h..(j + 1) * 2 * h]).map(|(a, w)| a * w).sum::<f32>();
@@ -305,26 +312,91 @@ impl<'a> Accumulator<'a> {
         }
     }
 
-    /// Sortie brute pour le joueur au trait `stm`.
+    /// Activations quantifiées (u8, 0..=127) : [joueur au trait `stm`, adversaire] ; renvoie leur nombre (2 × hidden).
     #[inline]
-    pub fn forward(&self, stm: u8) -> f32 {
+    fn activations(&self, stm: u8, acts: &mut [u8; 2 * MAX_HIDDEN]) -> usize {
         let h = self.net.hidden;
         let shift = self.net.shift1;
-        let mut acts = [0u8; 2 * MAX_HIDDEN];
         for (k, persp) in [stm as usize, (stm ^ 1) as usize].into_iter().enumerate() {
             for (a, &x) in acts[k * h..(k + 1) * h].iter_mut().zip(&self.acc[persp][..h]) {
                 *a = (x >> shift).clamp(0, ACT_MAX as i16) as u8;
             }
         }
+        2 * h
+    }
+
+    /// Sortie brute pour le joueur au trait `stm`.
+    #[inline]
+    pub fn forward(&self, stm: u8) -> f32 {
+        let mut acts = [0u8; 2 * MAX_HIDDEN];
+        let n = self.activations(stm, &mut acts);
         let mut sums = [0i32; HIDDEN2];
-        layer2(&acts[..2 * h], &self.net.w2q, &mut sums);
+        layer2(&acts[..n], &self.net.w2q, &mut sums);
         self.net.output(&sums)
+    }
+
+    /// Scores de la tête de politique (un par case de départ) pour le joueur au trait `stm`.
+    #[inline]
+    pub fn policy(&self, p: &Policy, stm: u8) -> [f32; 16] {
+        debug_assert_eq!(p.hidden, self.net.hidden);
+        let mut acts = [0u8; 2 * MAX_HIDDEN];
+        let n = self.activations(stm, &mut acts);
+        let mut sums = [0i32; HIDDEN2];
+        layer2(&acts[..n], &p.wq, &mut sums);
+        std::array::from_fn(|j| sums[j] as f32 * p.inv[j] + p.b[j])
     }
 
     /// Score entier pour le joueur au trait `stm` (échelle `SCALE`).
     #[inline]
     pub fn eval(&self, stm: u8) -> i32 {
         (self.forward(stm) * SCALE).round() as i32
+    }
+}
+
+/// Tête de politique « case de départ » (train/train_policy.py), posée sur l'accumulateur d'un réseau
+/// donné (même première couche) : un score par case, pour générer d'abord les coups des cases
+/// prometteuses au dernier étage de la recherche. Calcul quantifié par la même fonction que la couche 2
+/// (16 sorties utiles sur 32).
+#[derive(Clone, Debug)]
+pub struct Policy {
+    pub hidden: usize,
+    /// 16 × (2 × hidden) en f32 (référence) ; quantifiés dans `wq` (disposition de `layer2`).
+    w: Vec<f32>,
+    b: [f32; 16],
+    wq: Vec<i8>,
+    inv: [f32; HIDDEN2],
+}
+
+impl Policy {
+    /// Fichier « QPOL1 » : hidden (u32), puis poids 16 × 2·hidden et biais 16 en f32 petit-boutiste.
+    pub fn load(path: &str) -> Result<Policy, String> {
+        let bytes = std::fs::read(path).map_err(|e| format!("{path} : {e}"))?;
+        if bytes.len() < 9 || &bytes[..5] != b"QPOL1" {
+            return Err(format!("{path} : pas une politique QPOL1"));
+        }
+        let hidden = u32::from_le_bytes(bytes[5..9].try_into().unwrap()) as usize;
+        let f: Vec<f32> = bytes[9..].chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
+        if hidden % 4 != 0 || hidden > MAX_HIDDEN || f.len() != 16 * 2 * hidden + 16 {
+            return Err(format!("{path} : taille inattendue"));
+        }
+        let (w, b) = f.split_at(16 * 2 * hidden);
+        let mut inv = [0f32; HIDDEN2];
+        let mut wq = vec![0i8; HIDDEN2 * 2 * hidden];
+        for j in 0..16 {
+            let row = &w[j * 2 * hidden..(j + 1) * 2 * hidden];
+            let s = 127.0 / row.iter().fold(0f32, |m, x| m.max(x.abs())).max(1e-6);
+            inv[j] = 1.0 / (ACT_MAX as f32 * s);
+            for (k, &x) in row.iter().enumerate() {
+                wq[((k / 4) * HIDDEN2 + j) * 4 + k % 4] = (x * s).round() as i8;
+            }
+        }
+        Ok(Policy { hidden, w: w.to_vec(), b: b.try_into().unwrap(), wq, inv })
+    }
+
+    /// Scores en f32 sans quantification (contrôle contre PyTorch) ; `net` = le réseau d'origine.
+    pub fn logits_f32(&self, net: &Nnue, g: &Game) -> [f32; 16] {
+        let z = net.activations_f32(g);
+        std::array::from_fn(|j| self.b[j] + z.iter().zip(&self.w[j * 2 * self.hidden..]).map(|(a, w)| a * w).sum::<f32>())
     }
 }
 

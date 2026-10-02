@@ -60,6 +60,54 @@ fn main() {
     let ns = t.elapsed().as_nanos() as f64 / (reps * positions.len()) as f64;
     println!("coût : {ns:.0} ns/évaluation (calcul complet, f32)   (contrôle {acc})");
 
+    // Politique (facultative) : contrôle contre PyTorch sur les lignes ayant un meilleur coup, et coût.
+    if let Some(pol_path) = args.iter().position(|a| a == "--policy").map(|i| args[i + 1].clone()) {
+        let pol = qawale::nnue::Policy::load(&pol_path).unwrap();
+        let expected: Vec<Vec<f32>> = std::fs::read_to_string(format!("{pol_path}.check.txt"))
+            .unwrap()
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .map(|l| l.split_whitespace().map(|x| x.parse().unwrap()).collect())
+            .collect();
+        let rows: Vec<Game> = BufReader::new(std::fs::File::open(&csv).unwrap())
+            .lines()
+            .map_while(Result::ok)
+            .skip(1)
+            .filter(|l| !l.ends_with(','))
+            .take(expected.len())
+            .map(|line| {
+                let f: Vec<&str> = line.split(',').collect();
+                let mut stacks: [Vec<u8>; 16] = Default::default();
+                for sq in 0..16 {
+                    if f[5 + sq] != "." {
+                        stacks[sq] = f[5 + sq].chars().map(|c| match c { 'r' => 0, 'j' => 1, _ => 2 }).collect();
+                    }
+                }
+                Game::from_stacks(&stacks, [f[3].parse().unwrap(), f[4].parse().unwrap()], f[2].parse().unwrap())
+            })
+            .collect();
+        let (mut err_f32, mut err_q) = (0f32, 0f32);
+        for (g, e) in rows.iter().zip(&expected) {
+            let lf = pol.logits_f32(&net, g);
+            let lq = qawale::nnue::Accumulator::new(&net, g).policy(&pol, g.player);
+            for j in 0..16 {
+                err_f32 = err_f32.max((lf[j] - e[j]).abs());
+                err_q = err_q.max((lq[j] - lf[j]).abs());
+            }
+        }
+        println!("politique : écart max f32 / PyTorch {err_f32:.2e}, quantifiée / f32 {err_q:.3} (scores bruts)");
+        assert!(err_f32 < 1e-3, "politique : Rust et PyTorch ne calculent pas la même chose");
+        let accs: Vec<_> = rows.iter().map(|g| qawale::nnue::Accumulator::new(&net, g)).collect();
+        let t = Instant::now();
+        let mut s = 0f32;
+        for _ in 0..200 {
+            for (a, g) in accs.iter().zip(&rows) {
+                s += a.policy(&pol, black_box(g.player))[0];
+            }
+        }
+        println!("politique : {:.0} ns/appel (accumulateur déjà calculé)   (contrôle {s:.0})", t.elapsed().as_nanos() as f64 / (200 * rows.len()) as f64);
+    }
+
     // Ce que fait un nœud à 1 demi-coup des feuilles : générer chaque enfant et l'évaluer.
     let sample = &positions[..200];
     let bench = |name: &str, f: &dyn Fn(&Game) -> (i64, u64)| {

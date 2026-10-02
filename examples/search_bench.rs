@@ -174,16 +174,24 @@ fn main() {
         }
         println!("    profondeur complète moyenne :{phases}");
         // Qualité du tri par profondeur restante.
-        let mut cuts = [[0u64; 4]; 8];
+        let mut cuts = [[0u64; 6]; 8];
         for r in &res {
             for (c, x) in cuts.iter_mut().zip(&r.1.cuts) {
-                for k in 0..4 {
+                for k in 0..6 {
                     c[k] += x[k];
                 }
             }
         }
         if cuts[0][0] > 0 {
             println!("    killers du dernier étage : {} essayés, {:.1} % ont coupé", cuts[0][0], 100.0 * cuts[0][1] as f64 / cuts[0][0] as f64);
+        }
+        if cuts[0][3] > 0 {
+            println!(
+                "    coupures pendant la génération (dernier étage) : {} ; en moyenne {:.2} coups des cases précédentes, puis rang {:.2} dans sa case",
+                cuts[0][3],
+                cuts[0][4] as f64 / cuts[0][3] as f64,
+                cuts[0][5] as f64 / cuts[0][3] as f64
+            );
         }
         for (d, c) in cuts.iter().enumerate().rev() {
             if d > 0 && c[0] > 0 {
