@@ -4,7 +4,8 @@ Journal des résultats, idées et décisions. À tenir à jour à chaque session
 Dernière mise à jour : 2026-10-02.
 
 ## ▶ Reprise rapide (à lire en premier dans une nouvelle session)
-**Où on en est (2026-10-02)** : 10 galets par joueur (variante retenue). **Meilleur bot : `nnue=weights/nnue_h64_v2.bin`**
+**Où on en est (2026-10-02)** : 10 galets par joueur (variante retenue). **Meilleur bot : `nnue=weights/nnue_h64_v3.bin`** (nuit du 3 octobre,
+étiquettes prof. 5 : +19 contre v2) ; avant : `nnue_h64_v2.bin`
 (boucle NNUE de la nuit du 2 octobre, it04 : +53 Elo contre `nnue_h64.bin`, la première version)
 (réseau NNUE quantifié, sections « NNUE » plus bas) : **+218 Elo contre l'évaluation classique à 100 ms**. Recherche :
 alpha-bêta + table (symétries) + tri des coups (évaluation des filles) + killers + PVS ; au dernier étage (enfants = feuilles,
@@ -429,3 +430,14 @@ it09-it14 (816 k positions), contre v2, 500 parties à 100 ms : λ 0,9 (témoin)
 (tous ±22). ⇒ Plus de poids au résultat n'aide pas : les résultats viennent de parties jouées à prof. 2 avec 5 % de coups
 au hasard, trop bruitées (le R² baisse de 0,45 à 0,14, la cible devenant surtout du bruit). On garde λ = 0,9.
 Le témoin λ 0,9 à +21 confirme que réentraîner sur la fenêtre it09-it14 donne un réseau ≈ v2 (plafond de la boucle).
+
+## Boucle NNUE à étiquettes prof. 5 (nuit du 3 octobre, `data/nnue_loop5/`)
+Commande : `nnue_loop.py --dir data/nnue_loop5 --label-depth 5 --games 2500 --search-time 20000 --new-weight 4
+--min-positions 100000000 --base "data/nnue_loop/it09,data/nnue_loop/it1[0-4]" --hidden 64 --stop-at 08:30`
+(nouvelles options : `--base` = données de complément, `--new-weight` = répétition des nouvelles données, `--search-time`).
+- **53 min par itération** (génération 49 min pour 2 500 parties), et non ~2 h 30 annoncées : l'essai à blanc de 30 parties
+  sur 20 threads sous-utilisait la machine ⇒ extrapoler à partir d'au moins ~10 parties par thread. 8 itérations.
+- Une promotion : it03 (+15, +1 à +30) ; ensuite candidats entre −10 et +8 contre it03. Vérification indépendante
+  (500 parties, 250 ouvertures, 100 ms) : **it03 bat v2 +19 (+2 à +37)**, it08 +14 (−4 à +32) ⇒ installé
+  `weights/nnue_h64_v3.bin` (nouveau meilleur, départ par défaut de nnue_loop).
+- ⇒ Les étiquettes prof. 5 apportent un petit gain (~+15 à +20), puis plafonnent à leur tour.

@@ -39,7 +39,7 @@ os.chdir(ROOT)
 
 p = argparse.ArgumentParser()
 p.add_argument("--dir", default="data/nnue_loop")
-p.add_argument("--start", default="weights/nnue_h64_v2.bin", help="réseau de départ (champion initial et référence)")
+p.add_argument("--start", default="weights/nnue_h64_v3.bin", help="réseau de départ (champion initial et référence)")
 p.add_argument("--iterations", type=int, default=100)
 p.add_argument("--games", type=int, default=10000, help="parties générées par itération")
 p.add_argument("--label-depth", type=int, default=4)

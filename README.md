@@ -24,7 +24,7 @@ l'IA joue contre elle-même. On peut jouer contre elle dans le terminal.
 Prérequis : [Rust](https://rustup.rs) (édition 2024, Rust ≥ 1.85).
 
 ```sh
-cargo run --release -- --mode hb --stones 10 --time 2 --bot "full nnue=weights/nnue_h64_v2.bin"
+cargo run --release -- --mode hb --stones 10 --time 2 --bot "full nnue=weights/nnue_h64_v3.bin"
 ```
 
 Cette commande lance une partie où **vous** jouez Rouge contre l'IA la plus forte (2 s par coup).
@@ -67,6 +67,7 @@ Tournois à 10 galets, 100 ms par coup, 500 parties par affrontement, ouvertures
 | Réseau NNUE (quantifié) contre la meilleure évaluation écrite à la main | **+218 Elo** (+193 à +244) |
 | Coups « killer » et historique au dernier étage de la recherche | **+29 Elo** (+7 à +52) |
 | Réseau v2, issu de la boucle d'apprentissage de nuit, contre le premier réseau | **+53 Elo** (+34 à +73) |
+| Réseau v3, boucle avec étiquettes à prof. 5, contre v2 | **+19 Elo** (+2 à +37) |
 | **Total, mesuré directement** : bot actuel contre le bot d'origine (alpha-bêta + table, évaluation à la main) | **+400 Elo** (+364 à +443) : 417 victoires, 75 nuls, 8 défaites |
 
 Essais sans gain mesuré, gardés dans le code mais désactivés et documentés dans `NOTES.md` : tête de politique
@@ -138,7 +139,7 @@ champion actuel, et promotion seulement si l'amélioration est statistiquement n
 | `src/main.rs`, `src/ui.rs` | partie dans le terminal |
 | `examples/` | outils (tournois, mesures, génération de données) |
 | `train/` | scripts Python d'entraînement et boucles d'amélioration |
-| `weights/` | évaluations entraînées versionnées (`nnue_h64_v2.bin` = la meilleure, `nnue_h64.bin` = la première) |
+| `weights/` | évaluations entraînées versionnées (`nnue_h64_v3.bin` = la meilleure, `v2` et `nnue_h64.bin` = les précédentes) |
 | `data/` | données générées, régénérables (non versionné) |
 | `NOTES.md` | journal de recherche complet |
 
@@ -148,7 +149,7 @@ Tous les outils prennent des bots décrits par une courte chaîne : `[nom[@ms]] 
 
 ```
 "full@1000"                                   bot par défaut, 1 s par coup
-"fort@100 nnue=weights/nnue_h64_v2.bin"       réseau NNUE, 100 ms par coup
+"fort@100 nnue=weights/nnue_h64_v3.bin"       réseau NNUE, 100 ms par coup
 "essai prof=3 tri=non pvs=non"                profondeur fixe 3, sans tri ni PVS
 "premier@1000 base=base tri=non pvs=non"      alpha-bêta seul, comme la toute première version
 ```
@@ -181,7 +182,7 @@ Scripts Python (`train/`) : `train_nnue.py` (réseau), `nnue_loop.py` (boucle de
 Exemple, un tournoi :
 
 ```sh
-cargo run --release --example matches -- --bot "classique@100" --bot "nnue@100 nnue=weights/nnue_h64_v2.bin" --stones 10 --games 500 --threads 10
+cargo run --release --example matches -- --bot "classique@100" --bot "nnue@100 nnue=weights/nnue_h64_v3.bin" --stones 10 --games 500 --threads 10
 ```
 
 ### Entraîner un réseau
@@ -191,8 +192,8 @@ tests de règles, par exemple dans un `.venv`.
 
 ```sh
 # 1. Générer et étiqueter des parties (≈ 25-40 min pour 10 000 parties à 20 threads)
-cargo run --release --example gen_data -- --games 10000 --stones 10 --player "full prof=2 nnue=weights/nnue_h64_v2.bin" \
-    --label-depth 4 --label-nnue weights/nnue_h64_v2.bin --exact-plies 4 --threads 20 --out data/run1/positions.csv
+cargo run --release --example gen_data -- --games 10000 --stones 10 --player "full prof=2 nnue=weights/nnue_h64_v3.bin" \
+    --label-depth 4 --label-nnue weights/nnue_h64_v3.bin --exact-plies 4 --threads 20 --out data/run1/positions.csv
 # 2. Exporter
 cargo run --release --example export_features -- --in data/run1/positions.csv --out-prefix data/run1/
 cargo run --release --example export_nnue -- data/run1
