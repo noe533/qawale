@@ -24,6 +24,8 @@ p = argparse.ArgumentParser()
 p.add_argument("--data", default="", help="dossiers séparés par des virgules (défaut : data/loop/it*)")
 p.add_argument("--hidden", type=int, default=64)
 p.add_argument("--hidden2", type=int, default=32)
+p.add_argument("--single", action="store_true",
+               help="une seule vue (joueur au trait) en entrée de la couche 2, au lieu de [trait, adversaire]")
 p.add_argument("--epochs", type=int, default=20)
 p.add_argument("--batch", type=int, default=8192)
 p.add_argument("--lr", type=float, default=2e-3)
@@ -126,19 +128,24 @@ swap = torch.tensor(swap, device=dev)
 
 
 class Net(torch.nn.Module):
-    def __init__(self, h, h2):
+    def __init__(self, h, h2, single):
         super().__init__()
+        self.single = single
         self.ft = torch.nn.Linear(INPUTS, h)  # accumulateur (partagé par les deux points de vue)
-        self.l2 = torch.nn.Linear(2 * h, h2)
+        self.l2 = torch.nn.Linear(h if single else 2 * h, h2)
         self.l3 = torch.nn.Linear(h2, 1)
 
     def forward(self, x_red, red_to_move):
         x_yel = x_red[:, swap]
-        a_red, a_yel = self.ft(x_red), self.ft(x_yel)
         m = red_to_move[:, None]
-        us = torch.where(m, a_red, a_yel)
-        them = torch.where(m, a_yel, a_red)
-        z = torch.clamp(torch.cat([us, them], dim=1), 0, 1)
+        if self.single:
+            # Une seule vue : la position vue par le joueur au trait.
+            z = torch.clamp(self.ft(torch.where(m, x_red, x_yel)), 0, 1)
+        else:
+            a_red, a_yel = self.ft(x_red), self.ft(x_yel)
+            us = torch.where(m, a_red, a_yel)
+            them = torch.where(m, a_yel, a_red)
+            z = torch.clamp(torch.cat([us, them], dim=1), 0, 1)
         z = torch.clamp(self.l2(z), 0, 1)
         return self.l3(z).squeeze(-1)
 
@@ -146,7 +153,7 @@ class Net(torch.nn.Module):
 Xg = torch.tensor(X, device=dev)  # octets : converti en float par lot
 red = torch.tensor(player == 0, device=dev)
 yt = torch.tensor(y, device=dev)
-net = Net(args.hidden, args.hidden2).to(dev)
+net = Net(args.hidden, args.hidden2, args.single).to(dev)
 opt = torch.optim.Adam(net.parameters(), lr=args.lr)
 sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, args.epochs)
 idx_tr = torch.tensor(np.where(tr)[0], device=dev)
@@ -184,10 +191,11 @@ for ep in range(args.epochs):
 pred = predict(torch.arange(len(X), device=dev))
 report(f"NNUE {args.hidden}/{args.hidden2}", pred)
 
-# ---- Écriture : QNN1, hidden, hidden2, puis w1 (INPUTS × hidden), b1, w2 (hidden2 × 2·hidden), b2, w3, b3 ----
+# ---- Écriture : QNN1 (deux vues) ou QNS1 (une seule vue), hidden, hidden2, puis w1 (INPUTS × hidden), b1,
+#      w2 (hidden2 × 2·hidden, ou hidden2 × hidden pour QNS1), b2, w3, b3 ----
 sd = {k: v.detach().cpu().numpy().astype("<f4") for k, v in net.state_dict().items()}
 with open(args.out, "wb") as f:
-    f.write(b"QNN1" + struct.pack("<II", args.hidden, args.hidden2))
+    f.write((b"QNS1" if args.single else b"QNN1") + struct.pack("<II", args.hidden, args.hidden2))
     f.write(sd["ft.weight"].T.copy().tobytes())  # torch : (hidden, INPUTS) → une ligne par entrée
     f.write(sd["ft.bias"].tobytes())
     f.write(sd["l2.weight"].tobytes())

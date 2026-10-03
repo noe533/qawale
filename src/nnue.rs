@@ -74,9 +74,13 @@ const ACT_MAX: i32 = 127;
 pub struct Nnue {
     pub hidden: usize,
     pub hidden2: usize,
+    /// Une seule vue (joueur au trait) en entrée de la couche 2, au lieu de [trait, adversaire] (fichier « QNS1»).
+    pub single: bool,
+    /// Entrées de la couche 2 : hidden (une vue) ou 2 × hidden (deux vues).
+    n_in: usize,
     w1: Vec<f32>,
     b1: Vec<f32>,
-    /// HIDDEN2 × (2 × hidden), comme PyTorch.
+    /// HIDDEN2 × n_in, comme PyTorch.
     w2: Vec<f32>,
     b2: [f32; HIDDEN2],
     w3: [f32; HIDDEN2],
@@ -96,13 +100,15 @@ pub struct Nnue {
 }
 
 impl Nnue {
-    /// Fichier binaire écrit par train/train_nnue.py : « QNN1 », hidden et hidden2 (u32),
-    /// puis w1, b1, w2 (hidden2 × 2·hidden), b2, w3, b3 en f32 petit-boutiste.
+    /// Fichier binaire écrit par train/train_nnue.py : « QNN1 » (deux vues) ou « QNS1 » (une vue), hidden et
+    /// hidden2 (u32), puis w1, b1, w2 (hidden2 × 2·hidden, ou hidden2 × hidden), b2, w3, b3 en f32 petit-boutiste.
     pub fn load(path: &str) -> Result<Nnue, String> {
         let bytes = std::fs::read(path).map_err(|e| format!("{path} : {e}"))?;
-        if bytes.len() < 12 || &bytes[..4] != b"QNN1" {
-            return Err(format!("{path} : pas un réseau QNN1"));
-        }
+        let single = match bytes.get(..4) {
+            Some(b"QNN1") => false,
+            Some(b"QNS1") => true,
+            _ => return Err(format!("{path} : pas un réseau QNN1 / QNS1")),
+        };
         let u = |i: usize| u32::from_le_bytes(bytes[i..i + 4].try_into().unwrap()) as usize;
         let (hidden, hidden2) = (u(4), u(8));
         if hidden2 != HIDDEN2 || !hidden.is_multiple_of(4) || hidden > MAX_HIDDEN {
@@ -111,7 +117,8 @@ impl Nnue {
             ));
         }
         let floats: Vec<f32> = bytes[12..].as_chunks::<4>().0.iter().map(|&c| f32::from_le_bytes(c)).collect();
-        let sizes = [INPUTS * hidden, hidden, hidden2 * 2 * hidden, hidden2, hidden2, 1];
+        let n_in = if single { hidden } else { 2 * hidden };
+        let sizes = [INPUTS * hidden, hidden, hidden2 * n_in, hidden2, hidden2, 1];
         if floats.len() != sizes.iter().sum::<usize>() {
             return Err(format!("{path} : taille inattendue (entrées {INPUTS}, couches {hidden}/{hidden2})"));
         }
@@ -122,13 +129,24 @@ impl Nnue {
             a.to_vec()
         };
         let (w1, b1, w2, b2, w3, b3) = (take(sizes[0]), take(sizes[1]), take(sizes[2]), take(sizes[3]), take(sizes[4]), take(1)[0]);
-        Ok(Nnue::from_parts(hidden, w1, b1, w2, b2.try_into().unwrap(), w3.try_into().unwrap(), b3))
+        Ok(Nnue::from_parts(hidden, single, w1, b1, w2, b2.try_into().unwrap(), w3.try_into().unwrap(), b3))
     }
 
     /// Construit le réseau à partir des poids f32 et calcule les poids quantifiés.
-    pub fn from_parts(hidden: usize, w1: Vec<f32>, b1: Vec<f32>, w2: Vec<f32>, b2: [f32; HIDDEN2], w3: [f32; HIDDEN2], b3: f32) -> Nnue {
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_parts(
+        hidden: usize,
+        single: bool,
+        w1: Vec<f32>,
+        b1: Vec<f32>,
+        w2: Vec<f32>,
+        b2: [f32; HIDDEN2],
+        w3: [f32; HIDDEN2],
+        b3: f32,
+    ) -> Nnue {
+        let n_in = if single { hidden } else { 2 * hidden };
         assert!(hidden.is_multiple_of(4) && hidden <= MAX_HIDDEN);
-        assert_eq!((w1.len(), b1.len(), w2.len()), (INPUTS * hidden, hidden, HIDDEN2 * 2 * hidden));
+        assert_eq!((w1.len(), b1.len(), w2.len()), (INPUTS * hidden, hidden, HIDDEN2 * n_in));
         // Échelle de l'accumulateur : la plus fine (127 × 2^k) qui garantit l'absence de débordement
         // i16, en bornant |acc| par |biais| + la somme des 64 plus grands |poids| de chaque neurone
         // (une position a au plus 28 galets + 16 sommets = 44 entrées actives).
@@ -150,19 +168,19 @@ impl Nnue {
         // (une échelle commune serait fixée par le poids le plus extrême de toute la couche).
         let mut s2 = [0f32; HIDDEN2];
         for (j, s) in s2.iter_mut().enumerate() {
-            let max = w2[j * 2 * hidden..(j + 1) * 2 * hidden].iter().fold(0f32, |m, x| m.max(x.abs()));
+            let max = w2[j * n_in..(j + 1) * n_in].iter().fold(0f32, |m, x| m.max(x.abs()));
             *s = 127.0 / max.max(1e-6);
         }
-        let mut w2q = vec![0i8; HIDDEN2 * 2 * hidden];
-        for g in 0..(2 * hidden / 4) {
+        let mut w2q = vec![0i8; HIDDEN2 * n_in];
+        for g in 0..(n_in / 4) {
             for j in 0..HIDDEN2 {
                 for t in 0..4 {
-                    w2q[(g * HIDDEN2 + j) * 4 + t] = (w2[j * 2 * hidden + 4 * g + t] * s2[j]).round() as i8;
+                    w2q[(g * HIDDEN2 + j) * 4 + t] = (w2[j * n_in + 4 * g + t] * s2[j]).round() as i8;
                 }
             }
         }
         let inv2 = s2.map(|s| 1.0 / (ACT_MAX as f32 * s));
-        Nnue { hidden, hidden2: HIDDEN2, w1, b1, w2, b2, w3, b3, s1, shift1, w1q, b1q, w2q, s2, inv2 }
+        Nnue { hidden, hidden2: HIDDEN2, single, n_in, w1, b1, w2, b2, w3, b3, s1, shift1, w1q, b1q, w2q, s2, inv2 }
     }
 
     /// Échelles de quantification (accumulateur, plus petite échelle de la couche 2), pour information.
@@ -191,7 +209,8 @@ impl Nnue {
     }
 
     /// Activations de la première couche en f32 (sans quantification) : [joueur au trait, adversaire],
-    /// après ReLU bornée. Pour les contrôles contre PyTorch.
+    /// après ReLU bornée (toujours les deux vues ; un réseau à une vue n'utilise que la première moitié).
+    /// Pour les contrôles contre PyTorch.
     pub fn activations_f32(&self, g: &Game) -> Vec<f32> {
         let h = self.hidden;
         let mut acc = [self.b1.clone(), self.b1.clone()];
@@ -207,11 +226,11 @@ impl Nnue {
 
     /// Sortie brute en f32, calcul direct sans quantification (contrôle contre PyTorch).
     pub fn forward_f32(&self, g: &Game) -> f32 {
-        let h = self.hidden;
+        let n = self.n_in;
         let z = self.activations_f32(g);
         let mut out = self.b3;
         for j in 0..HIDDEN2 {
-            let s: f32 = self.b2[j] + z.iter().zip(&self.w2[j * 2 * h..(j + 1) * 2 * h]).map(|(a, w)| a * w).sum::<f32>();
+            let s: f32 = self.b2[j] + z[..n].iter().zip(&self.w2[j * n..(j + 1) * n]).map(|(a, w)| a * w).sum::<f32>();
             out += self.w3[j] * s.clamp(0.0, 1.0);
         }
         out
@@ -312,24 +331,24 @@ impl<'a> Accumulator<'a> {
         }
     }
 
-    /// Activations quantifiées (u8, 0..=127) : [joueur au trait `stm`, adversaire] ; renvoie leur nombre (2 × hidden).
+    /// Activations quantifiées (u8, 0..=127) : [joueur au trait `stm`, adversaire si `both`] ; renvoie leur nombre.
     #[inline]
-    fn activations(&self, stm: u8, acts: &mut [u8; 2 * MAX_HIDDEN]) -> usize {
+    fn activations(&self, stm: u8, both: bool, acts: &mut [u8; 2 * MAX_HIDDEN]) -> usize {
         let h = self.net.hidden;
         let shift = self.net.shift1;
-        for (k, persp) in [stm as usize, (stm ^ 1) as usize].into_iter().enumerate() {
+        for (k, persp) in [stm as usize, (stm ^ 1) as usize].into_iter().take(if both { 2 } else { 1 }).enumerate() {
             for (a, &x) in acts[k * h..(k + 1) * h].iter_mut().zip(&self.acc[persp][..h]) {
                 *a = (x >> shift).clamp(0, ACT_MAX as i16) as u8;
             }
         }
-        2 * h
+        if both { 2 * h } else { h }
     }
 
     /// Sortie brute pour le joueur au trait `stm`.
     #[inline]
     pub fn forward(&self, stm: u8) -> f32 {
         let mut acts = [0u8; 2 * MAX_HIDDEN];
-        let n = self.activations(stm, &mut acts);
+        let n = self.activations(stm, !self.net.single, &mut acts);
         let mut sums = [0i32; HIDDEN2];
         layer2(&acts[..n], &self.net.w2q, &mut sums);
         self.net.output(&sums)
@@ -340,7 +359,7 @@ impl<'a> Accumulator<'a> {
     pub fn policy(&self, p: &Policy, stm: u8) -> [f32; 16] {
         debug_assert_eq!(p.hidden, self.net.hidden);
         let mut acts = [0u8; 2 * MAX_HIDDEN];
-        let n = self.activations(stm, &mut acts);
+        let n = self.activations(stm, true, &mut acts);
         let mut sums = [0i32; HIDDEN2];
         layer2(&acts[..n], &p.wq, &mut sums);
         std::array::from_fn(|j| sums[j] as f32 * p.inv[j] + p.b[j])
@@ -417,7 +436,7 @@ mod tests {
     use crate::game::{Status, MAX_STONES_PER_PLAYER};
 
     /// Réseau aléatoire (pour les tests) : poids réguliers mais distincts.
-    fn test_net(hidden: usize) -> Nnue {
+    fn test_net(hidden: usize, single: bool) -> Nnue {
         let mut x = 12345u64;
         let mut r = |n: usize, s: f32| -> Vec<f32> {
             (0..n)
@@ -429,9 +448,10 @@ mod tests {
                 })
                 .collect()
         };
-        let (w1, b1, w2) = (r(INPUTS * hidden, 0.05), r(hidden, 0.5), r(HIDDEN2 * 2 * hidden, 0.3));
+        let n_in = if single { hidden } else { 2 * hidden };
+        let (w1, b1, w2) = (r(INPUTS * hidden, 0.05), r(hidden, 0.5), r(HIDDEN2 * n_in, 0.3));
         let (b2, w3) = (r(HIDDEN2, 0.3).try_into().unwrap(), r(HIDDEN2, 1.0).try_into().unwrap());
-        Nnue::from_parts(hidden, w1, b1, w2, b2, w3, 0.1)
+        Nnue::from_parts(hidden, single, w1, b1, w2, b2, w3, 0.1)
     }
 
     /// L'accumulateur tenu à jour pendant la génération des coups donne exactement la même sortie
@@ -439,26 +459,28 @@ mod tests {
     /// version quantifiée reste proche du calcul f32.
     #[test]
     fn incremental_matches_full() {
-        let net = test_net(32);
-        let mut g = Game::with_stones(MAX_STONES_PER_PLAYER);
-        let mut rng = 4242u64;
-        let mut max_q = 0f32;
-        while g.status() == Status::Ongoing {
-            let mut acc = Accumulator::new(&net, &g);
-            let before = acc.acc;
-            g.for_each_child_obs(&mut acc, |_, c, a| {
-                assert_eq!(a.forward(c.player), net.forward(c));
-                max_q = max_q.max((net.forward(c) - net.forward_f32(c)).abs());
-                true
-            });
-            assert!(acc.acc == before, "l'accumulateur n'est pas revenu à la position de départ");
-            let moves = g.legal_moves();
-            rng ^= rng << 13;
-            rng ^= rng >> 7;
-            rng ^= rng << 17;
-            g = g.play(moves[(rng % moves.len() as u64) as usize]);
+        for single in [false, true] {
+            let net = test_net(32, single);
+            let mut g = Game::with_stones(MAX_STONES_PER_PLAYER);
+            let mut rng = 4242u64;
+            let mut max_q = 0f32;
+            while g.status() == Status::Ongoing {
+                let mut acc = Accumulator::new(&net, &g);
+                let before = acc.acc;
+                g.for_each_child_obs(&mut acc, |_, c, a| {
+                    assert_eq!(a.forward(c.player), net.forward(c));
+                    max_q = max_q.max((net.forward(c) - net.forward_f32(c)).abs());
+                    true
+                });
+                assert!(acc.acc == before, "l'accumulateur n'est pas revenu à la position de départ");
+                let moves = g.legal_moves();
+                rng ^= rng << 13;
+                rng ^= rng >> 7;
+                rng ^= rng << 17;
+                g = g.play(moves[(rng % moves.len() as u64) as usize]);
+            }
+            assert!(max_q < 0.1, "écart de quantification trop grand (une vue : {single}) : {max_q}");
         }
-        assert!(max_q < 0.1, "écart de quantification trop grand : {max_q}");
     }
 
     /// Chaque galet donne exactement une entrée d'étage, chaque case occupée une entrée de sommet,

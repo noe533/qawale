@@ -441,3 +441,16 @@ Commande : `nnue_loop.py --dir data/nnue_loop5 --label-depth 5 --games 2500 --se
   (500 parties, 250 ouvertures, 100 ms) : **it03 bat v2 +19 (+2 à +37)**, it08 +14 (−4 à +32) ⇒ installé
   `weights/nnue_h64_v3.bin` (nouveau meilleur, départ par défaut de nnue_loop).
 - ⇒ Les étiquettes prof. 5 apportent un petit gain (~+15 à +20), puis plafonnent à leur tour.
+
+## Réseau à une seule vue (idée d'un ami, 2026-10-03, `train_nnue.py --single`, fichiers « QNS1 », `data/single_test/`)
+La couche 2 ne reçoit que l'accumulateur du joueur au trait (H valeurs) au lieu de [trait, adversaire] (2H). Les deux
+accumulateurs restent tenus à jour pendant la recherche (le trait change à chaque demi-coup) : seule la fin du réseau
+est allégée. Mêmes données que la dernière itération de la nuit prof. 5 (it03-it08 ×4 + nnue_loop it09-it14) :
+| réseau | R² validation | ns/enfant (nnue_check) | Elo contre v3 (500 parties, 100 ms) |
+|---|---|---|---|
+| deux vues, H=64 (témoin) | 0,473 | 146 | +13 (−6 à +32) |
+| une vue, H=64 | 0,423 | 136 | −8 (−26 à +9) |
+| une vue, H=128 | 0,482 | 178 | −7 (−26 à +12) |
+⇒ Aucun gain : à H égal la seconde vue apporte de la qualité pour presque rien (−7 % de temps seulement sans elle,
+le coût est surtout dans la génération et l'accumulateur) ; à qualité égale (H=128), c'est plus lent. On garde deux vues.
+Le moteur lit les deux formats (`Nnue::single`), testé (incrémental = calcul complet).
