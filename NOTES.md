@@ -454,3 +454,13 @@ est allégée. Mêmes données que la dernière itération de la nuit prof. 5 (i
 ⇒ Aucun gain : à H égal la seconde vue apporte de la qualité pour presque rien (−7 % de temps seulement sans elle,
 le coût est surtout dans la génération et l'accumulateur) ; à qualité égale (H=128), c'est plus lent. On garde deux vues.
 Le moteur lit les deux formats (`Nnue::single`), testé (incrémental = calcul complet).
+
+## Interface en anglais (2026-10-03)
+Pour partager le bot : interface de jeu, aide des bots (`SPEC_HELP`) et messages d'erreur des coups en anglais ; README.md en
+anglais (README.fr.md en français). Directions **u / d / l / r** (up, down, left, right ; flèches ^ v < > acceptées) au lieu de
+h / b / g / d — attention, « d » veut maintenant dire *down*. Commandes help, moves, hint, undo, quit (anciens noms français
+acceptés) ; options `--no-analysis`, `--red`, `--yellow` (`--sans-analyse`, `--rouge`, `--jaune` acceptées) ; le jaune s'affiche `y`.
+« hint » utilise désormais le moteur de `--bot` (avant : le bot par défaut à évaluation classique).
+**Données** : gen_data écrit maintenant une colonne `best_move_en` (notation anglaise) ; les fichiers antérieurs ont `best_move`
+(notation h/b/g/d, relue par `ui::parse_move_fr`). move_features, prefix_features et train_policy.py choisissent selon la colonne.
+Outils de développement (examples/, train/), NOTES.md et commentaires du code restent en français.

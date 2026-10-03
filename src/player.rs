@@ -114,34 +114,33 @@ pub const PRESETS: &[(&str, &str)] = &[
     ("sym", "table=sym coup=non"),
     ("noeval", "poids=0,0,0,0 surface=0"),
     ("agressif", "poids=0,2,12,100 surface=1"),
+    ("aggressive", "poids=0,2,12,100 surface=1"),
     ("hasard", "type=hasard"),
+    ("random", "type=hasard"),
 ];
 
 pub const SPEC_HELP: &str = "\
-Description d'un bot : [nom[@ms]] [clé=valeur]...
-  nom       un réglage prédéfini (full, base, sym, noeval, agressif, hasard)
-            ou un nom libre ; « nom@ms » fixe aussi le temps par coup
-  type=     ab (alpha-bêta, défaut) | hasard
-  temps=    temps par coup en ms
-  prof=     profondeur maximale en demi-coups (sans temps : illimité en temps)
-  table=    off | on | sym          (mémoire des positions, défaut sym)
-  coup=     oui | non               (essayer d'abord le coup mémorisé, défaut oui)
-  mem=      taille de la table en Mo (défaut 16)
-  tri=      oui | non               (trier les coups des nœuds intérieurs, défaut oui)
-  pvs=      oui | non               (recherche à fenêtre nulle après le premier coup, défaut oui)
-  killer1=  oui | non               (dernier étage : essayer les coups killers d'abord, défaut oui)
-  histo=    oui | non               (dernier étage : cases de départ selon l'historique, défaut oui)
-  lmr=      oui | non               (réductions des coups tardifs, défaut non) ; réglages : lmr_n= (coups
-            cherchés en entier, défaut 3), lmr_tard= (au-delà : réduction de 2, défaut 12), lmr_prof= (profondeur
-            restante minimale, défaut 3 ; 2 = jusqu'à remplacer la recherche des coups tardifs par leur évaluation)
-  chemins=  oui | non               (dernier étage : chemins ordonnés pas à pas vers la meilleure case d'arrivée, défaut non : sans gain mesuré)
-  poids=    a,b,c,d                 poids d'une ligne libre avec 0..3 sommets (défaut 0,1,6,40)
-  surface=  bonus par sommet contrôlé (défaut 2)
-  eval=     fichier de poids appris (ex. data/eval_linear.txt) ; « classique » = évaluation d'origine
-  nnue=     fichier de réseau (train/train_nnue.py), prioritaire sur eval=
-  politique= fichier de politique « case de départ » (train/train_policy.py), avec le nnue= sur lequel elle a été apprise
-  base=     applique un réglage prédéfini
-Exemples : \"full@1000\"   \"essai base=full poids=0,2,12,100 prof=4\"   \"hasard\"";
+Bot description: [name[@ms]] [key=value]...
+  name       a preset (full, base, sym, noeval, aggressive, random) or any name; \"name@ms\" also sets the time per move
+  type=      ab (alpha-beta, default) | random
+  time=      time per move in ms
+  depth=     maximum depth in plies (without a time: unlimited time)
+  nnue=      neural network file, e.g. weights/nnue_h64_v3.bin (the strongest evaluation)
+  eval=      learned linear evaluation file ; \"classic\" = hand-written evaluation (default)
+  weights=   a,b,c,d    hand-written evaluation: weight of a free line with 0..3 tops (default 0,1,6,40)
+  surface=   hand-written evaluation: bonus per controlled top (default 2)
+  tt=        off | on | sym     transposition table (default sym: shared by the 8 symmetries)
+  ttmove=    yes | no           try the stored best move first (default yes)
+  mem=       table size in MB (default 16)
+  order=     yes | no           sort the moves of inner nodes (default yes)
+  pvs=       yes | no           null-window search after the first move (default yes)
+  killer1=   yes | no           last level: try killer moves first (default yes)
+  history=   yes | no           last level: start squares ordered by a cutoff history (default yes)
+  experimental, off by default (no measured gain): lmr= (late move reductions, with lmr_n=, lmr_tard=, lmr_prof=),
+             policy= (start-square policy file, with its nnue=), paths= (step-by-step path ordering)
+  base=      apply a preset
+  (French key names are also accepted: temps, prof, poids, tri, coup, histo, politique, chemins ; oui / non)
+Examples: \"full@1000\"   \"strong@100 nnue=weights/nnue_h64_v3.bin\"   \"test depth=4 weights=0,2,12,100\"   \"random\"";
 
 impl Default for BotSpec {
     fn default() -> Self {
@@ -169,14 +168,14 @@ impl Default for BotSpec {
 
 fn parse_bool(v: &str) -> Result<bool, String> {
     match v {
-        "oui" | "o" | "1" | "true" | "yes" | "on" => Ok(true),
+        "oui" | "o" | "1" | "true" | "yes" | "y" | "on" => Ok(true),
         "non" | "n" | "0" | "false" | "no" | "off" => Ok(false),
-        _ => Err(format!("booléen attendu (oui/non), reçu « {v} »")),
+        _ => Err(format!("yes/no expected, got \"{v}\"")),
     }
 }
 
 fn parse_num<T: std::str::FromStr>(k: &str, v: &str) -> Result<T, String> {
-    v.parse().map_err(|_| format!("{k}= : nombre invalide « {v} »"))
+    v.parse().map_err(|_| format!("{k}=: invalid number \"{v}\""))
 }
 
 impl BotSpec {
@@ -199,7 +198,7 @@ impl BotSpec {
                 }
                 name = Some(tok.to_string());
             } else {
-                return Err(format!("« {tok} » : attendu clé=valeur"));
+                return Err(format!("\"{tok}\": key=value expected"));
             }
         }
         s.name = name.unwrap_or_else(|| spec.trim().replace(' ', "_"));
@@ -215,7 +214,7 @@ impl BotSpec {
                 self.kind = match v {
                     "ab" | "alphabeta" => Kind::AlphaBeta,
                     "hasard" | "random" => Kind::Random,
-                    _ => return Err(format!("type inconnu « {v} » (ab, hasard)")),
+                    _ => return Err(format!("unknown type \"{v}\" (ab, random)")),
                 }
             }
             "temps" | "time" => self.time = Some(Duration::from_millis(parse_num(k, v)?)),
@@ -225,7 +224,7 @@ impl BotSpec {
                     "off" | "non" => TtMode::Off,
                     "on" | "oui" => TtMode::On,
                     "sym" => TtMode::Symmetric,
-                    _ => return Err(format!("table= : off, on ou sym, reçu « {v} »")),
+                    _ => return Err(format!("tt=: off, on or sym expected, got \"{v}\"")),
                 }
             }
             "coup" | "ttmove" => self.tt_move = parse_bool(v)?,
@@ -241,25 +240,25 @@ impl BotSpec {
             "lmr_prof" => self.lmr.3 = parse_num(k, v)?,
             "poids" | "weights" => {
                 let w: Vec<i32> = v.split(',').map(|x| parse_num(k, x)).collect::<Result<_, _>>()?;
-                self.eval.line_weight = w.try_into().map_err(|_| "poids= : 4 valeurs attendues (a,b,c,d)".to_string())?;
+                self.eval.line_weight = w.try_into().map_err(|_| "weights=: 4 values expected (a,b,c,d)".to_string())?;
             }
             "surface" => self.eval.surface = parse_num(k, v)?,
             "nnue" => self.nnue_file = Some((v.to_string(), Arc::new(Nnue::load(v)?))),
             "politique" | "policy" => self.policy_file = Some((v.to_string(), Arc::new(Policy::load(v)?))),
             "eval" => {
-                self.eval_file = if v == "classique" { None } else { Some((v.to_string(), Arc::new(LinearEval::load(v)?))) };
+                self.eval_file = if v == "classique" || v == "classic" { None } else { Some((v.to_string(), Arc::new(LinearEval::load(v)?))) };
             }
             "base" | "preset" => {
                 let (_, def) = PRESETS
                     .iter()
                     .find(|(p, _)| *p == v)
-                    .ok_or_else(|| format!("réglage prédéfini inconnu « {v} »"))?;
+                    .ok_or_else(|| format!("unknown preset \"{v}\""))?;
                 for tok in def.split_whitespace() {
                     let (k2, v2) = tok.split_once('=').unwrap();
                     self.set(k2, v2)?;
                 }
             }
-            _ => return Err(format!("clé inconnue « {k} »")),
+            _ => return Err(format!("unknown key \"{k}\"")),
         }
         Ok(())
     }
@@ -297,7 +296,7 @@ impl BotSpec {
         bot.nnue = self.nnue_file.as_ref().map(|(_, n)| n.clone());
         bot.policy = self.policy_file.as_ref().map(|(path, p)| {
             let h = bot.nnue.as_ref().map(|n| n.hidden);
-            assert!(h == Some(p.hidden), "politique {path} : il faut aussi nnue= avec un réseau de même taille ({} ≠ {h:?})", p.hidden);
+            assert!(h == Some(p.hidden), "policy {path}: needs nnue= with a network of the same size ({} ≠ {h:?})", p.hidden);
             p.clone()
         });
         bot
@@ -306,26 +305,26 @@ impl BotSpec {
     /// Résumé lisible des réglages.
     pub fn describe(&self, default_time: Duration) -> String {
         match self.kind {
-            Kind::Random => format!("{} : coups au hasard", self.name),
+            Kind::Random => format!("{}: random moves", self.name),
             Kind::AlphaBeta => format!(
-                "{} : alpha-bêta, {}{}, table {:?}{}, {}",
+                "{}: alpha-beta, {}{}, table {:?}{}, {}",
                 self.name,
                 match self.effective_time(default_time) {
-                    Some(t) => format!("{} ms/coup", t.as_millis()),
-                    None => "temps illimité".into(),
+                    Some(t) => format!("{} ms/move", t.as_millis()),
+                    None => "unlimited time".into(),
                 },
-                self.depth.map(|d| format!(", prof. max {d}")).unwrap_or_default(),
+                self.depth.map(|d| format!(", max depth {d}")).unwrap_or_default(),
                 self.tt,
-                if self.tt_move { " + coup mémorisé" } else { "" },
+                if self.tt_move { " + stored move" } else { "" },
                 match (&self.nnue_file, &self.eval_file) {
                     (Some((path, n)), _) => format!(
-                        "réseau {path} ({}/{}){}",
+                        "network {path} ({}/{}){}",
                         n.hidden,
                         n.hidden2,
-                        self.policy_file.as_ref().map(|(p, _)| format!(" + politique {p}")).unwrap_or_default()
+                        self.policy_file.as_ref().map(|(p, _)| format!(" + policy {p}")).unwrap_or_default()
                     ),
-                    (None, Some((path, _))) => format!("évaluation apprise {path}"),
-                    (None, None) => format!("poids {:?}, surface {}", self.eval.line_weight, self.eval.surface),
+                    (None, Some((path, _))) => format!("learned evaluation {path}"),
+                    (None, None) => format!("hand-written evaluation (weights {:?}, surface {})", self.eval.line_weight, self.eval.surface),
                 }
             ),
         }

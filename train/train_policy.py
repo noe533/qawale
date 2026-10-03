@@ -60,7 +60,7 @@ for i, d in enumerate(dirs):
     with open(f"{d}/positions.csv", encoding="utf-8") as f:
         r = csv.reader(f)
         head = next(r)
-        col = head.index("best_move")
+        col = head.index("best_move_en") if "best_move_en" in head else head.index("best_move")  # même case de départ
         best = [row[col] if len(row) > col else "" for row in r]
     assert len(best) == len(X) == len(M), d
     sq = np.array([(int(m[1]) - 1) * 4 + (ord(m[0]) - ord("a")) if m else -1 for m in best], dtype=np.int64)

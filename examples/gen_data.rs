@@ -35,7 +35,8 @@
 //!   search_score  score de cette recherche pour le joueur au trait (±1000000 − distance = gain/perte forcés)
 //!   exact         valeur exacte pour le joueur au trait : 1, 0, -1 (vide si non calculée ou abandonnée)
 //!   exact_score   score exact (distance à la victoire comprise)
-//!   best_move     meilleur coup de l'étiquette recherche, ex. « a1 hhd » (vide si aucune) : pour apprendre une politique
+//!   best_move_en  meilleur coup de l'étiquette recherche, notation anglaise u/d/l/r, ex. « a1 uur » (vide si aucune).
+//!                 Les fichiers plus anciens ont une colonne best_move en notation française h/b/g/d (ui::parse_move_fr).
 
 use qawale::bot::{Bot, TtMode, WIN};
 use qawale::features::LinearEval;
@@ -378,7 +379,7 @@ fn main() {
         let mut f = std::fs::File::create(&args.out).unwrap();
         writeln!(
             f,
-            "{HEADER_START}reserve_red,reserve_yellow,{},result,search_depth,search_score,exact,exact_score,best_move",
+            "{HEADER_START}reserve_red,reserve_yellow,{},result,search_depth,search_score,exact,exact_score,best_move_en",
             squares.join(",")
         )
         .unwrap();

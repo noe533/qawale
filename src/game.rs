@@ -216,7 +216,7 @@ pub fn square_name(sq: u8) -> String {
 }
 
 pub fn dir_char(d: u8) -> char {
-    ['h', 'b', 'g', 'd'][d as usize]
+    ['u', 'd', 'l', 'r'][d as usize]
 }
 
 impl fmt::Display for Move {
@@ -578,15 +578,15 @@ impl Game {
     pub fn check_move(&self, m: Move) -> Result<(), String> {
         let sq = m.square() as usize;
         if self.reserve[self.player as usize] == 0 {
-            return Err("plus de galets en réserve".into());
+            return Err("no stones left in reserve".into());
         }
         if self.heights[sq] == 0 {
-            return Err(format!("la case {} est vide", square_name(sq as u8)));
+            return Err(format!("square {} is empty", square_name(sq as u8)));
         }
         let need = self.heights[sq] as u32 + 1;
         if m.len() != need {
             return Err(format!(
-                "la pile fera {} galets : il faut exactement {} directions (reçu {})",
+                "the stack will have {} stones: exactly {} directions are needed (got {})",
                 need, need, m.len()
             ));
         }
@@ -594,11 +594,11 @@ impl Game {
         for i in 0..m.len() {
             let d = m.dir(i);
             if prev != NONE && d == prev ^ 1 {
-                return Err(format!("demi-tour interdit au pas {}", i + 1));
+                return Err(format!("going straight back is not allowed (step {})", i + 1));
             }
             let n = NEIGHBOR[cur][d as usize];
             if n == NONE {
-                return Err(format!("sortie du plateau au pas {}", i + 1));
+                return Err(format!("off the board (step {})", i + 1));
             }
             cur = n as usize;
             prev = d;

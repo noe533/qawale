@@ -199,7 +199,11 @@ fn main() {
 
     let lines_in: Vec<String> = BufReader::new(std::fs::File::open(&input).unwrap()).lines().map_while(Result::ok).collect();
     let header: Vec<&str> = lines_in[0].split(',').collect();
-    let col = header.iter().position(|h| *h == "best_move").expect("colonne best_move absente");
+    // Colonne best_move_en (notation u/d/l/r) ou, dans les fichiers plus anciens, best_move (notation h/b/g/d).
+    let (col, english) = match header.iter().position(|h| *h == "best_move_en") {
+        Some(c) => (c, true),
+        None => (header.iter().position(|h| *h == "best_move").expect("colonne best_move(_en) absente"), false),
+    };
     let rows: Vec<&String> = lines_in[1..].iter().filter(|l| l.split(',').nth(col).is_some_and(|b| !b.is_empty())).collect();
     let step = (rows.len() / n).max(1);
 
@@ -215,7 +219,7 @@ fn main() {
             }
         }
         let g = Game::from_stacks(&st, [f[3].parse().unwrap(), f[4].parse().unwrap()], f[2].parse().unwrap());
-        let best = qawale::ui::parse_move(f[col]).expect("best_move illisible");
+        let best = if english { qawale::ui::parse_move(f[col]) } else { qawale::ui::parse_move_fr(f[col]) }.expect("meilleur coup illisible");
         let mover = g.player;
         let mut reserve_after = g.reserve;
         reserve_after[mover as usize] -= 1;

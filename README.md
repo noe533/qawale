@@ -1,208 +1,211 @@
-# Qawale — moteur et IA en Rust
+# Qawale — game engine and AI in Rust
 
-Un moteur complet du jeu de société **Qawale** (Gigamic) et une IA qui y joue : recherche alpha-bêta
-optimisée et évaluation par petit réseau de neurones de type **NNUE**, entraîné sur des parties que
-l'IA joue contre elle-même. On peut jouer contre elle dans le terminal.
+*[Version française](README.fr.md)*
 
-> Ce README présente le projet. Le journal de recherche détaillé (toutes les mesures, les essais
-> ratés, les pièges rencontrés) est dans [`NOTES.md`](NOTES.md).
+A complete engine for the board game **Qawale** (Gigamic) and an AI that plays it: an optimized alpha-beta search
+and a small **NNUE**-style neural network evaluation, trained on games the AI plays against itself.
+You can play against it in the terminal.
 
-## Le jeu
+> This README presents the project. The detailed research log (every measurement, failed attempts, pitfalls)
+> is in [`NOTES.md`](NOTES.md), written in French; code comments are in French too.
 
-- Plateau 4 × 4. Au départ, 2 galets neutres sur chacun des 4 coins.
-- Chaque joueur a une réserve de galets (8 dans la règle de base ; le projet travaille surtout à **10**,
-  variante plus décisive). Rouge commence.
-- **Un coup** : poser un galet de sa réserve sur une pile non vide, prendre toute la pile, puis la
-  redistribuer un galet par case **en commençant par celui du bas**, en se déplaçant orthogonalement,
-  sans demi-tour immédiat (repasser sur une case est permis).
-- **Victoire** : 4 sommets de sa couleur alignés (ligne, colonne ou diagonale). Si un coup aligne les deux
-  couleurs à la fois (rarissime), le joueur qui vient de jouer gagne.
-- Réserves épuisées sans alignement : match nul.
+## The game
 
-## Démarrage rapide
+- 4 × 4 board. At the start, 2 neutral stones on each of the 4 corners.
+- Each player has a reserve of stones (8 in the standard rule; most of the training and measurements in this
+  project use a **10**-stone variant, which is more decisive). Red moves first.
+- **A move**: put a stone from your reserve on a non-empty stack, pick up the whole stack, then drop it back one
+  stone per square **starting with the bottom stone**, moving orthogonally, without going straight back
+  (passing over a square again is allowed).
+- **Win**: 4 tops of your colour in a row (row, column or diagonal). If a move aligns both colours at once
+  (very rare), the player who just moved wins.
+- Reserves exhausted without an alignment: draw.
 
-Prérequis : [Rust](https://rustup.rs) (édition 2024, Rust ≥ 1.85).
+## Quick start
+
+Requirement: [Rust](https://rustup.rs) (edition 2024, Rust ≥ 1.85).
 
 ```sh
-cargo run --release -- --mode hb --stones 10 --time 2 --bot "full nnue=weights/nnue_h64_v3.bin"
+cargo run --release -- --mode hb --time 2 --bot "full nnue=weights/nnue_h64_v3.bin"
 ```
 
-Cette commande lance une partie où **vous** jouez Rouge contre l'IA la plus forte (2 s par coup).
+This starts a game with the standard rule (8 stones per player) where **you** play Red against the strongest AI
+(2 s per move).
 
-| Option | Effet |
+| Option | Effect |
 |---|---|
-| `--mode hb` / `bh` / `hh` / `bb` | humain contre bot (vous êtes Rouge, vous commencez) / bot contre humain / deux humains / deux bots |
-| `--stones N` | galets par joueur, de 1 à 10 (défaut 8) |
-| `--time S` | secondes de réflexion par coup |
-| `--bot "…"` | description du bot (voir plus bas) |
-| `--no-color` | sans couleurs ANSI |
+| `--mode hb` / `bh` / `hh` / `bb` | human vs bot (you are Red and move first) / bot vs human / two humans / two bots |
+| `--stones N` | stones per player, 1 to 10 (default 8; the networks were trained and measured with 10) |
+| `--time S` | thinking time per move, in seconds |
+| `--bot "…"` | bot description (see below) |
+| `--no-analysis` | do not rate your moves (less waiting) |
+| `--no-color` | no ANSI colours |
 
-**Saisir un coup** : la case puis une direction par galet, par exemple `a1 hhd`. Directions :
-`h` haut, `b` bas, `g` gauche, `d` droite. Il faut autant de directions que de galets dans la pile
-une fois le vôtre posé.
-Commandes : `coups` (liste les coups légaux), `indice` (conseil du bot), `annuler`, `aide`, `quitter`.
+**Entering a move**: the square, then one direction per stone, e.g. `a1 uur`. Directions: `u` up, `d` down,
+`l` left, `r` right (arrows `^ v < >` work too). Give as many directions as there are stones in the stack once
+yours is added. Commands: `moves` (list legal moves), `hint` (the bot's suggestion), `undo`, `help`, `quit`.
+Board: `r` / `y` / `n` = red / yellow / neutral stone, the top of each stack in capitals.
 
-**Note de vos coups** : après chacun de vos coups, le bot (celui de `--bot`, avec le même temps de réflexion)
-analyse la position d'avant et classe tous les coups possibles, par exemple
-`Votre coup : 2e sur 5 — excellent (le vôtre : éval +60 ; meilleur selon le bot : a1 hdd : éval +62)`.
-Appréciations selon l'écart avec le meilleur : meilleur coup, excellent (≤ 30), bon coup (≤ 100), imprécision (≤ 250),
-erreur (≤ 500), grosse erreur, ou gain forcé manqué / gaffe. Les coups menant à la même position (à symétrie près)
-comptent pour un. `--sans-analyse` désactive la note.
+**Rating of your moves**: after each of your moves, the bot (the `--bot` engine, with the same thinking time)
+analyses the previous position and ranks every possible move, e.g.
+`Your move: ranked 3 of 5 — excellent (yours: eval +118; bot's best: a1 uuu: eval +123)`.
+Verdicts by the gap to the best move: best move, excellent (≤ 30), good move (≤ 100), inaccuracy (≤ 250),
+mistake (≤ 500), big mistake, or missed forced win / blunder. Moves leading to the same position (up to symmetry)
+count as one.
 
-**Lire l'évaluation du bot** (affichée après chacun de ses coups, de son point de vue) : « gain forcé en N »
-ou « perte forcée en N » sont des certitudes (N en demi-coups) ; sinon le score est une estimation
-(négatif = bon pour vous).
+**Reading the bot's evaluation** (shown after each of its moves, from its own point of view): "forced win in N"
+and "forced loss in N" are certain (N in plies); otherwise the score is an estimate (negative = good for you).
 
-> ⚠ `.cargo/config.toml` compile pour le processeur de la machine (`target-cpu=native`, AVX2…), ce qui
-> accélère l'évaluation de 15 %. Pour un binaire portable, supprimez ce fichier.
+> ⚠ `.cargo/config.toml` compiles for the local CPU (`target-cpu=native`, AVX2…), which makes the evaluation
+> 15 % faster. Delete this file for a portable binary.
 
-## Niveau actuel
+## Current strength
 
-Tournois à 10 galets, 100 ms par coup, 500 parties par affrontement, ouvertures toutes différentes
-(intervalle de confiance à 95 % entre parenthèses) :
+Tournaments with 10 stones, 100 ms per move, 500 games per match, all openings different
+(95 % confidence interval in parentheses):
 
-| Étape | Gain mesuré |
+| Step | Measured gain |
 |---|---|
-| Tri des coups + recherche à fenêtre nulle (PVS), contre l'alpha-bêta d'origine | **+141 Elo** (+118 à +164) |
-| Réseau NNUE (quantifié) contre la meilleure évaluation écrite à la main | **+218 Elo** (+193 à +244) |
-| Coups « killer » et historique au dernier étage de la recherche | **+29 Elo** (+7 à +52) |
-| Réseau v2, issu de la boucle d'apprentissage de nuit, contre le premier réseau | **+53 Elo** (+34 à +73) |
-| Réseau v3, boucle avec étiquettes à prof. 5, contre v2 | **+19 Elo** (+2 à +37) |
-| **Total, mesuré directement** : bot actuel contre le bot d'origine (alpha-bêta + table, évaluation à la main) | **+400 Elo** (+364 à +443) : 417 victoires, 75 nuls, 8 défaites |
+| Move ordering + principal variation search (PVS), vs the original alpha-beta | **+141 Elo** (+118 to +164) |
+| Quantized NNUE network vs the best hand-written evaluation | **+218 Elo** (+193 to +244) |
+| Killer moves and history at the last level of the search | **+29 Elo** (+7 to +52) |
+| Network v2, from the overnight self-learning loop, vs the first network | **+53 Elo** (+34 to +73) |
+| Network v3, loop with depth-5 labels, vs v2 | **+19 Elo** (+2 to +37) |
+| **Total, measured directly**: current bot vs the original bot (alpha-beta + table, hand-written evaluation) | **+400 Elo** (+364 to +443): 417 wins, 75 draws, 8 losses |
 
-Essais sans gain mesuré, gardés dans le code mais désactivés et documentés dans `NOTES.md` : tête de politique
-(`politique=`), tri des chemins pas à pas (`chemins=`), réductions des coups tardifs (`lmr=`), règles apprises
-pour deviner le bon coup (arbres de décision, « machine » qui écrit le coup), poids du résultat réel des parties
-dans les étiquettes. La résolution exacte du jeu complet est hors de portée (mesures dans `NOTES.md`) ; les petites
-variantes de 1 à 4 galets par joueur sont des nuls (`solve_variants`).
+Attempts without a measured gain, kept in the code but disabled and documented in `NOTES.md`: policy head
+(`policy=`), step-by-step path ordering (`paths=`), late move reductions (`lmr=`), learned rules to guess the best
+move (decision trees, a "machine" writing the move symbol by symbol), more weight on the actual game result in the
+labels, single-perspective network (`--single`). Solving the full game is out of reach (measurements in
+`NOTES.md`); the small variants with 1 to 4 stones per player are draws (`solve_variants`).
 
-## Comment fonctionne l'IA
+## How the AI works
 
-### Le moteur (`src/game.rs`)
-- Sommets des piles en bitboards (16 bits par couleur) : détection d'alignement en quelques instructions.
-- Chaque pile tient dans un `u64` (2 bits par galet, le bas dans les bits faibles).
-- Un coup est un `u64` (case de départ + suite de directions) ; génération sans allocation par parcours en
-  profondeur des chemins de dépôt (`for_each_child`).
-- Hachage Zobrist incrémental, calculé pour les 8 symétries du plateau à la fois : les positions
-  symétriques partagent leurs résultats.
+### The engine (`src/game.rs`)
+- Stack tops as bitboards (16 bits per colour): alignment detection in a few instructions.
+- Each stack fits in a `u64` (2 bits per stone, bottom in the low bits).
+- A move is a `u64` (start square + sequence of directions); allocation-free generation by depth-first
+  traversal of the drop paths (`for_each_child`).
+- Incremental Zobrist hashing, computed for the 8 board symmetries at once: symmetric positions share their results.
 
-### La recherche (`src/bot.rs`)
-Négamax alpha-bêta avec approfondissement itératif et limite de temps, plus :
-- **table de transposition** indexée par la clé canonique (modulo symétries), qui mémorise aussi le meilleur coup ;
-- **tri des coups** aux nœuds intérieurs : gain immédiat (on s'arrête aussitôt), coup mémorisé, coups
-  « killer », puis évaluation de la position obtenue ;
-- **PVS** : après le premier coup, on vérifie seulement par une fenêtre nulle que les autres ne font pas mieux ;
-- **dernier étage** (enfants = feuilles, qu'on ne peut pas trier sans tout évaluer) : coups killers essayés
-  d'abord, puis cases de départ dans l'ordre d'un historique des coupures.
+### The search (`src/bot.rs`)
+Negamax alpha-beta with iterative deepening and a time limit, plus:
+- **transposition table** indexed by the canonical key (up to symmetry), which also stores the best move;
+- **move ordering** at inner nodes: immediate win (stop at once), stored move, killer moves, then the evaluation
+  of the resulting position;
+- **PVS**: after the first move, a null window only checks that the others are not better;
+- **last level** (children are leaves, which cannot be sorted without evaluating them all): killer moves first,
+  then start squares in the order of a cutoff history.
 
-Ces techniques ne changent jamais la valeur trouvée (c'est testé) ; elles divisent le nombre de nœuds
-par 4 à 9 selon la profondeur. La résolution exacte des fins de partie est 7 à 12 fois plus rapide.
-`search_bench` mesure aussi la qualité du tri (coupures dès le 1er coup, comparaison à l'optimum √N).
+These techniques never change the value found (this is tested); they divide the number of nodes by 4 to 9
+depending on depth. Exact endgame solving is 7 to 12 times faster. `search_bench` also measures the ordering
+quality (cutoffs on the first move, comparison with the √N optimum).
 
-### Les évaluations
-1. **Classique** (`bot::evaluate`) : points pour les lignes encore libres selon le nombre de sommets déjà en place.
-2. **Linéaire apprise** (`src/features.rs`) : 23 caractéristiques choisies à la main (lignes, galets enfouis,
-   case manquante atteignable au prochain coup…), poids appris par régression.
-3. **NNUE** (`src/nnue.rs`), la meilleure :
-   - **entrées** : pour chaque case, les galets à moi / adverses / neutres à chaque étage compté depuis le bas
-     (0 à 5, puis « 6 et plus » : 98 % des positions n'ont aucune pile de plus de 6), plus la couleur du sommet ;
-     384 entrées, vues depuis chacun des deux joueurs ;
-   - **réseau** : 384 → 64 (deux fois, un par point de vue) → 32 → 1 ;
-   - **incrémental** : la génération des coups signale chaque galet posé ou retiré (`StoneObserver`) et
-     l'accumulateur de la première couche est mis à jour au lieu d'être recalculé ;
-   - **quantifié** : accumulateur en entiers 16 bits, deuxième couche en 8 bits avec AVX2 :
-     ~130 ns par position évaluée, génération du coup comprise.
+### The evaluations
+1. **Hand-written** (`bot::evaluate`): points for lines still open, by number of tops already in place.
+2. **Learned linear** (`src/features.rs`): 23 hand-picked features (lines, buried stones, missing square reachable
+   next move…), weights learned by regression.
+3. **NNUE** (`src/nnue.rs`), the best one:
+   - **inputs**: for each square, my / opponent / neutral stones at each level counted from the bottom (0 to 5,
+     then "6 and more": 98 % of positions have no stack higher than 6), plus the colour of the top; 384 inputs,
+     seen from each of the two players;
+   - **network**: 384 → 64 (twice, one per point of view) → 32 → 1;
+   - **incremental**: move generation reports every stone added or removed (`StoneObserver`) and the first-layer
+     accumulator is updated instead of recomputed;
+   - **quantized**: 16-bit integer accumulator, 8-bit second layer with AVX2: ~130 ns per evaluated position,
+     move generation included.
 
-### L'apprentissage
-Le principe : faire jouer l'IA, étiqueter chaque position par ce qu'en dit une recherche plus profonde
-(ou par sa valeur exacte en fin de partie), puis entraîner l'évaluation à prédire ces étiquettes.
+### Learning
+The idea: let the AI play, label each position with what a deeper search says about it (or its exact value near
+the end of the game), then train the evaluation to predict these labels.
 
 ```
-gen_data  ──►  positions.csv  ──►  export_features + export_nnue  ──►  train_nnue.py (PyTorch, GPU)  ──►  réseau .bin
-(parties + étiquettes)               (tableaux numpy)                                                    │
+gen_data  ──►  positions.csv  ──►  export_features + export_nnue  ──►  train_nnue.py (PyTorch, GPU)  ──►  network .bin
+(games + labels)                     (numpy arrays)                                                      │
       ▲                                                                                                  │
-      └───────────────────── le nouveau réseau joue et étiquette les parties suivantes ◄─────────────────┘
+      └──────────────────────── the new network plays and labels the next games ◄────────────────────────┘
 ```
 
-`train/nnue_loop.py` automatise ce cycle pour une nuit : génération, entraînement, match contre le
-champion actuel, et promotion seulement si l'amélioration est statistiquement nette.
+`train/nnue_loop.py` automates this cycle overnight: generation, training, match against the current champion,
+and promotion only if the improvement is statistically clear.
 
-## Organisation du dépôt
+## Repository layout
 
-| Chemin | Contenu |
+| Path | Content |
 |---|---|
-| `src/game.rs` | règles, représentation, génération des coups, symétries, hachage |
-| `src/bot.rs` | recherche alpha-bêta, table de transposition, évaluation classique |
-| `src/nnue.rs` | réseau NNUE : entrées, accumulateur incrémental, quantification |
-| `src/features.rs` | évaluation linéaire apprise et ses caractéristiques |
-| `src/player.rs` | interface `Player` et description textuelle des bots |
-| `src/main.rs`, `src/ui.rs` | partie dans le terminal |
-| `examples/` | outils (tournois, mesures, génération de données) |
-| `train/` | scripts Python d'entraînement et boucles d'amélioration |
-| `weights/` | évaluations entraînées versionnées (`nnue_h64_v3.bin` = la meilleure, `v2` et `nnue_h64.bin` = les précédentes) |
-| `data/` | données générées, régénérables (non versionné) |
-| `NOTES.md` | journal de recherche complet |
+| `src/game.rs` | rules, representation, move generation, symmetries, hashing |
+| `src/bot.rs` | alpha-beta search, transposition table, hand-written evaluation |
+| `src/nnue.rs` | NNUE network: inputs, incremental accumulator, quantization |
+| `src/features.rs` | learned linear evaluation and its features |
+| `src/player.rs` | `Player` interface and text description of bots |
+| `src/main.rs`, `src/ui.rs` | playing in the terminal |
+| `examples/` | tools (tournaments, measurements, data generation) |
+| `train/` | Python training scripts and improvement loops |
+| `weights/` | versioned trained evaluations (`nnue_h64_v3.bin` = the best; `v2` and `nnue_h64.bin` = earlier ones) |
+| `data/` | generated data, reproducible (not versioned) |
+| `NOTES.md` | full research log (French) |
 
-## Décrire un bot
+## Describing a bot
 
-Tous les outils prennent des bots décrits par une courte chaîne : `[nom[@ms]] [clé=valeur]...`
+All tools take bots described by a short string: `[name[@ms]] [key=value]...`
 
 ```
-"full@1000"                                   bot par défaut, 1 s par coup
-"fort@100 nnue=weights/nnue_h64_v3.bin"       réseau NNUE, 100 ms par coup
-"essai prof=3 tri=non pvs=non"                profondeur fixe 3, sans tri ni PVS
-"premier@1000 base=base tri=non pvs=non"      alpha-bêta seul, comme la toute première version
+"full@1000"                                   default bot, 1 s per move
+"strong@100 nnue=weights/nnue_h64_v3.bin"     NNUE network, 100 ms per move
+"test depth=3 order=no pvs=no"                fixed depth 3, no ordering, no PVS
+"first@1000 base=base order=no pvs=no"        plain alpha-beta, like the very first version
 ```
 
-Principales clés : `temps=`, `prof=`, `nnue=`, `eval=` (évaluation linéaire), `table=off|on|sym`,
-`tri=`, `pvs=`, `killer1=`, `histo=`, `poids=` (évaluation classique) ; options expérimentales désactivées par
-défaut : `lmr=`, `politique=`, `chemins=`. Un réglage prédéfini (`full`, `base`, `hasard`…)
-n'est reconnu qu'en premier mot ; ailleurs, écrire `base=NOM`. Liste complète :
+Main keys: `time=`, `depth=`, `nnue=`, `eval=` (linear evaluation), `tt=off|on|sym`, `order=`, `pvs=`,
+`killer1=`, `history=`, `weights=` (hand-written evaluation); experimental options, off by default: `lmr=`,
+`policy=`, `paths=`. A preset (`full`, `base`, `random`…) is only recognized as the first word; elsewhere, write
+`base=NAME`. French key names (`prof=`, `temps=`, `tri=`…) are still accepted. Full list:
 `cargo run --release --example matches -- --aide-bot`.
 
-## Outils
+## Tools
 
-Tous se lancent avec `cargo run --release --example NOM -- [options]` (options détaillées en tête de chaque fichier).
+All run with `cargo run --release --example NAME -- [options]` (options described at the top of each file; the
+tools' output is in French).
 
-| Outil | Rôle |
+| Tool | Role |
 |---|---|
-| `matches` | tournoi entre bots, en parallèle, chaque ouverture jouée avec les deux couleurs ; Elo et intervalle de confiance |
-| `search_bench` | nœuds et temps à profondeur fixe sur un lot de positions ; juge exact de tout ce qui ne change pas la valeur (tri, PVS) |
-| `gen_data` | joue des parties et étiquette les positions (recherche, valeur exacte) ; reprend après interruption (`--resume`) |
-| `export_features`, `export_nnue` | convertit les positions en tableaux numpy pour Python |
-| `nnue_check` | vérifie que Rust et PyTorch calculent la même chose, mesure le coût du réseau |
-| `solve_variants` | résolution exacte depuis le début pour 1, 2, 3… galets par joueur |
-| `move_features`, `prefix_features` | exports pour apprendre des règles de choix de coups (par coup, par début de chemin) |
-| `eval_speed`, `bench`, `relabel`, `dupes` | coût des évaluations, résolution exacte, ré-étiquetage, transpositions |
+| `matches` | parallel tournament between bots, each opening played with both colours; Elo and confidence interval |
+| `search_bench` | nodes and time at fixed depth on a set of positions; exact judge for anything that does not change the value |
+| `gen_data` | plays games and labels the positions (search, exact value); resumes after interruption (`--resume`) |
+| `export_features`, `export_nnue` | converts positions into numpy arrays for Python |
+| `nnue_check` | checks that Rust and PyTorch compute the same thing, measures the network cost |
+| `solve_variants` | exact solving from the start for 1, 2, 3… stones per player |
+| `move_features`, `prefix_features` | exports to learn move-choice rules (per move, per path prefix) |
+| `eval_speed`, `bench`, `relabel`, `dupes` | evaluation cost, exact solving, relabelling, transpositions |
 
-Scripts Python (`train/`) : `train_nnue.py` (réseau), `nnue_loop.py` (boucle de nuit du réseau), `train_policy.py`
-(tête de politique), `rules_test.py` et `prefix_test.py` (règles apprises), `train_eval.py` et `night_loop.py`
-(évaluation linéaire, première approche).
+Python scripts (`train/`): `train_nnue.py` (network), `nnue_loop.py` (overnight network loop), `train_policy.py`
+(policy head), `rules_test.py` and `prefix_test.py` (learned rules), `train_eval.py` and `night_loop.py`
+(linear evaluation, first approach).
 
-Exemple, un tournoi :
+Example, a tournament:
 
 ```sh
-cargo run --release --example matches -- --bot "classique@100" --bot "nnue@100 nnue=weights/nnue_h64_v3.bin" --stones 10 --games 500 --threads 10
+cargo run --release --example matches -- --bot "classic@100" --bot "nnue@100 nnue=weights/nnue_h64_v3.bin" --stones 10 --games 500 --threads 10
 ```
 
-### Entraîner un réseau
+### Training a network
 
-Prérequis Python : `numpy` et `torch` (GPU CUDA conseillé, ~1 min par entraînement), plus `scikit-learn` pour les
-tests de règles, par exemple dans un `.venv`.
+Python requirements: `numpy` and `torch` (CUDA GPU recommended, ~1 min per training), plus `scikit-learn` for the
+rule experiments, for example in a `.venv`.
 
 ```sh
-# 1. Générer et étiqueter des parties (≈ 25-40 min pour 10 000 parties à 20 threads)
-cargo run --release --example gen_data -- --games 10000 --stones 10 --player "full prof=2 nnue=weights/nnue_h64_v3.bin" \
+# 1. Generate and label games (≈ 25-40 min for 10,000 games on 20 threads)
+cargo run --release --example gen_data -- --games 10000 --stones 10 --player "full depth=2 nnue=weights/nnue_h64_v3.bin" \
     --label-depth 4 --label-nnue weights/nnue_h64_v3.bin --exact-plies 4 --threads 20 --out data/run1/positions.csv
-# 2. Exporter
+# 2. Export
 cargo run --release --example export_features -- --in data/run1/positions.csv --out-prefix data/run1/
 cargo run --release --example export_nnue -- data/run1
-# 3. Entraîner, puis vérifier
+# 3. Train, then check
 python train/train_nnue.py --data data/run1 --hidden 64 --epochs 40 --out data/run1/nnue.bin
 cargo run --release --example nnue_check -- --net data/run1/nnue.bin --csv data/run1/positions.csv
 ```
 
-Ou tout automatiquement, pour la nuit (reprise possible, arrêt propre en créant `data/nnue_loop/STOP`) :
+Or everything automatically, overnight (resumable; clean stop by creating `data/nnue_loop/STOP`):
 
 ```sh
 python train/nnue_loop.py --stop-at 08:30
@@ -214,5 +217,6 @@ python train/nnue_loop.py --stop-at 08:30
 cargo test --release
 ```
 
-Ils vérifient notamment : cohérence de la génération des coups et du hachage incrémental, symétries,
-égalité des valeurs exactes avec et sans tri / PVS / table, accumulateur NNUE incrémental identique au calcul complet.
+They check in particular: consistency of move generation and incremental hashing, symmetries, identical exact
+values with and without ordering / PVS / table, incremental NNUE accumulator identical to a full computation,
+move notation.

@@ -6,12 +6,13 @@ use std::io::{self, BufRead, Write};
 use std::time::Duration;
 
 const HELP: &str = "\
-Coup : <case> <directions>   ex. « a1 hhd »
-  On pose un galet sur la case (non vide), on prend toute la pile et on la
-  redistribue en commençant par le galet du BAS, un galet par case.
-  Il faut autant de directions que de galets dans la pile (hauteur + 1).
-  Directions : h = haut, b = bas, g = gauche, d = droite (demi-tour interdit).
-Commandes : aide | coups (liste les coups) | indice | annuler | quitter";
+Move: <square> <directions>   e.g. \"a1 uur\"
+  Put one of your stones on a non-empty square, pick up the whole stack and drop it
+  back one stone per square, starting with the BOTTOM stone.
+  Give as many directions as there are stones in the stack (its height + 1).
+  Directions: u = up, d = down, l = left, r = right (going straight back is not allowed).
+  Board: r / y / n = red / yellow / neutral stone, top of the stack in capitals.
+Commands: help | moves (list legal moves) | hint | undo | quit";
 
 struct Options {
     /// Pour chaque couleur : `None` = humain, `Some("")` = le bot de `--bot`, sinon sa description.
@@ -36,7 +37,7 @@ fn parse_args() -> Options {
         analyse: true,
     };
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let side = |v: &str| if v == "humain" || v == "h" { None } else { Some(v.to_string()) };
+    let side = |v: &str| if ["human", "humain", "h"].contains(&v) { None } else { Some(v.to_string()) };
     let mut i = 0;
     while i < args.len() {
         let val = args.get(i + 1).cloned();
@@ -52,8 +53,8 @@ fn parse_args() -> Options {
                     _ => usage(),
                 };
             }
-            "--rouge" => o.sides[0] = side(&val.unwrap_or_else(|| usage())),
-            "--jaune" => o.sides[1] = side(&val.unwrap_or_else(|| usage())),
+            "--red" | "--rouge" => o.sides[0] = side(&val.unwrap_or_else(|| usage())),
+            "--yellow" | "--jaune" => o.sides[1] = side(&val.unwrap_or_else(|| usage())),
             "--bot" => o.bot = val.unwrap_or_else(|| usage()),
             "--time" => o.time = val.and_then(|s| s.parse().ok()).unwrap_or_else(|| usage()),
             "--depth" => o.depth = Some(val.and_then(|s| s.parse().ok()).unwrap_or_else(|| usage())),
@@ -64,7 +65,7 @@ fn parse_args() -> Options {
                 o.ansi = false;
                 takes_value = false;
             }
-            "--sans-analyse" => {
+            "--no-analysis" | "--sans-analyse" => {
                 o.analyse = false;
                 takes_value = false;
             }
@@ -77,11 +78,12 @@ fn parse_args() -> Options {
 
 fn usage() -> ! {
     eprintln!(
-        "usage : qawale [--mode hb|bh|hh|bb] [--bot BOT] [--rouge humain|BOT] [--jaune humain|BOT]
-               [--time SECONDES] [--depth N] [--stones 1..10] [--no-color] [--sans-analyse]
-  hb = humain (Rouge) contre bot, bh = bot contre humain (Jaune), hh, bb
-  --time : temps par coup par défaut des bots ; --depth : ajoute prof=N aux bots
-  --sans-analyse : ne pas noter les coups des humains (rang parmi tous les coups, selon le bot de --bot)
+        "usage: qawale [--mode hb|bh|hh|bb] [--bot BOT] [--red human|BOT] [--yellow human|BOT]
+              [--time SECONDS] [--depth N] [--stones 1..10] [--no-color] [--no-analysis]
+  hb = human (Red, moves first) vs bot, bh = bot vs human (Yellow), hh = two humans, bb = two bots
+  --time: thinking time per move of the bots (default 2) ; --depth: adds depth=N to the bots
+  --stones: stones per player (default 8, the standard rule)
+  --no-analysis: do not rate the human moves (rank among all moves, according to the --bot engine)
 
 {SPEC_HELP}"
     );
@@ -93,26 +95,27 @@ fn make_player(o: &Options, side: usize) -> Option<Box<dyn Player>> {
     let spec = o.sides[side].as_ref()?;
     let mut spec = if spec.is_empty() { o.bot.clone() } else { spec.clone() };
     if let Some(d) = o.depth {
-        spec += &format!(" prof={d}");
+        spec += &format!(" depth={d}");
     }
     let parsed = BotSpec::parse(&spec).unwrap_or_else(|e| {
-        eprintln!("bot « {spec} » : {e}");
+        eprintln!("bot \"{spec}\": {e}");
         std::process::exit(1)
     });
     let time = Duration::from_secs_f64(o.time);
-    println!("{} : {}", player_name(side as u8), parsed.describe(time));
+    println!("{}: {}", player_name(side as u8), parsed.describe(time));
     let mut p = parsed.build(time);
     p.new_game(side as u64 + 1);
     Some(p)
 }
 
+/// Score lisible, du point de vue du joueur concerné.
 fn describe_score(score: i32) -> String {
     if score >= WIN - 100 {
-        format!("gain forcé en {} coups", WIN - score)
+        format!("forced win in {} plies", WIN - score)
     } else if score <= -(WIN - 100) {
-        format!("perte forcée en {} coups", WIN + score)
+        format!("forced loss in {} plies", WIN + score)
     } else {
-        format!("éval {score:+}")
+        format!("eval {score:+}")
     }
 }
 
@@ -130,44 +133,38 @@ fn rate_move(bot: &mut Bot, g: &Game, m: Move) -> String {
     let ties = list.iter().filter(|e| e.2 == mine).count();
     let forced = WIN - 100;
     let verdict = if best >= forced && mine < forced {
-        "vous laissez passer un gain forcé !".to_string()
+        "you missed a forced win!".to_string()
     } else if mine <= -forced && best > -forced {
-        "gaffe : cela permet au bot de forcer le gain".to_string()
+        "blunder: this lets the bot force a win".to_string()
     } else {
-        let loss = best - mine;
-        match loss {
-            0 if ties > 1 => format!("parmi les meilleurs ({ties} coups ex æquo)"),
-            0 => "meilleur coup !".to_string(),
+        match best - mine {
+            0 if ties > 1 => format!("one of the best ({ties} moves tied)"),
+            0 => "best move!".to_string(),
             1..=30 => "excellent".to_string(),
-            31..=100 => "bon coup".to_string(),
-            101..=250 => "imprécision".to_string(),
-            251..=500 => "erreur".to_string(),
-            _ => "grosse erreur".to_string(),
+            31..=100 => "good move".to_string(),
+            101..=250 => "inaccuracy".to_string(),
+            251..=500 => "mistake".to_string(),
+            _ => "big mistake".to_string(),
         }
     };
-    let mut s = format!(
-        "Votre coup : {rank}e sur {} — {verdict}  (le vôtre : {}",
-        list.len(),
-        describe_score(mine)
-    );
+    let mut s = format!("Your move: ranked {rank} of {} — {verdict}  (yours: {}", list.len(), describe_score(mine));
     if mine != best {
-        s += &format!(" ; meilleur selon le bot : {} : {}", list[0].0, describe_score(best));
+        s += &format!("; bot's best: {}: {}", list[0].0, describe_score(best));
     }
-    s + &format!(")   [analyse prof. {depth}, {:.1} s]", t0.elapsed().as_secs_f64())
+    s + &format!(")   [analysis depth {depth}, {:.1} s]", t0.elapsed().as_secs_f64())
 }
 
 fn main() {
     let opts = parse_args();
-    println!("=== Qawale ===  (Rouge commence)\n{HELP}\n");
+    println!("=== Qawale ===  (Red moves first)\n{HELP}\n");
     let mut players = [make_player(&opts, 0), make_player(&opts, 1)];
     let human = [players[0].is_none(), players[1].is_none()];
-    // Bot qui répond à la commande « indice ».
-    let mut hint = BotSpec::default().build(Duration::from_secs_f64(opts.time));
-    // Analyste des coups humains : le moteur décrit par --bot (même réseau, même temps de réflexion).
-    let mut analyst = (opts.analyse && (human[0] || human[1]))
-        .then(|| BotSpec::parse(&opts.bot).ok())
-        .flatten()
-        .map(|s| s.build_bot(Duration::from_secs_f64(opts.time)));
+    // Le moteur décrit par --bot (même réseau, même temps de réflexion) répond à « hint » et note les
+    // coups des humains.
+    let engine = BotSpec::parse(&opts.bot).ok();
+    let time = Duration::from_secs_f64(opts.time);
+    let mut hint = engine.as_ref().unwrap_or(&BotSpec::default()).build(time);
+    let mut analyst = (opts.analyse && (human[0] || human[1])).then(|| engine.as_ref().map(|s| s.build_bot(time))).flatten();
     println!();
     let mut history: Vec<Game> = vec![Game::with_stones(opts.stones)];
     let stdin = io::stdin();
@@ -180,11 +177,11 @@ fn main() {
         match g.status() {
             Status::Ongoing => {}
             Status::Win(p) => {
-                println!("*** {} gagne ! ***", player_name(p));
+                println!("*** {} wins! ***", player_name(p));
                 break;
             }
             Status::Draw => {
-                println!("*** Match nul ***");
+                println!("*** Draw ***");
                 break;
             }
         }
@@ -194,7 +191,7 @@ fn main() {
             let (m, info) = p.choose(&g);
             let details = match info {
                 Some(i) => format!(
-                    "   [prof. {}, {} nœuds, {:.2}s, {}]",
+                    "   [depth {}, {} nodes, {:.2}s, {}]",
                     i.depth,
                     i.nodes,
                     t0.elapsed().as_secs_f64(),
@@ -202,7 +199,7 @@ fn main() {
                 ),
                 None => String::new(),
             };
-            println!("{} ({}) joue : {}{}\n", p.name(), player_name(g.player), m, details);
+            println!("{} ({}) plays: {}{}\n", p.name(), player_name(g.player), m, details);
             history.push(g.play(m));
             continue;
         }
@@ -214,11 +211,11 @@ fn main() {
         let line = line.trim().trim_start_matches('\u{feff}').to_lowercase();
         match line.as_str() {
             "" => continue,
-            "quitter" | "q" | "quit" => break,
-            "aide" | "help" | "?" => println!("{HELP}"),
-            "coups" => {
+            "quit" | "q" | "exit" | "quitter" => break,
+            "help" | "?" | "aide" => println!("{HELP}"),
+            "moves" | "coups" => {
                 let moves = g.legal_moves();
-                println!("{} coups légaux :", moves.len());
+                println!("{} legal moves:", moves.len());
                 for m in moves.iter().take(200) {
                     print!("{m}   ");
                 }
@@ -227,11 +224,11 @@ fn main() {
                 }
                 println!();
             }
-            "indice" => {
+            "hint" | "indice" => {
                 let (m, info) = hint.choose(&g);
-                println!("Suggestion : {}   ({})", m, info.map(|i| describe_score(i.score)).unwrap_or_default());
+                println!("Suggestion: {}   ({})", m, info.map(|i| describe_score(i.score)).unwrap_or_default());
             }
-            "annuler" | "u" | "undo" => {
+            "undo" | "annuler" => {
                 // Revient au dernier tour d'un humain.
                 if history.len() > 1 {
                     history.pop();
@@ -239,7 +236,7 @@ fn main() {
                         history.pop();
                     }
                 } else {
-                    println!("Rien à annuler.");
+                    println!("Nothing to undo.");
                 }
             }
             _ => match parse_move(&line).and_then(|m| g.check_move(m).map(|_| m)) {
@@ -249,7 +246,7 @@ fn main() {
                     }
                     history.push(g.play(m));
                 }
-                Err(e) => println!("Coup invalide : {e}"),
+                Err(e) => println!("Invalid move: {e}"),
             },
         }
     }
