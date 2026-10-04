@@ -2,7 +2,7 @@
 //! et table de transposition (optionnellement modulo les 8 symétries du plateau).
 
 use crate::features::{reach_table, LinearEval};
-use crate::game::{PathGuide, MAX_STACK};
+use crate::game::{MoveBits, PathGuide, MAX_STACK};
 use crate::nnue::{Accumulator, Nnue, Policy};
 use crate::game::{Game, Move, Status, INV_SYM, LINES, RED, YELLOW};
 use std::cmp::Reverse;
@@ -126,7 +126,7 @@ const UPPER: u8 = 2; // score <= valeur stockée
 struct Entry {
     key: u64,
     /// Meilleur coup, exprimé dans le repère canonique (0 = aucun).
-    mv: u64,
+    mv: MoveBits,
     score: i32,
     depth: u8,
     flag: u8,

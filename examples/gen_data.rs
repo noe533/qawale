@@ -133,7 +133,7 @@ fn parse_args() -> Args {
         }
         i += 2;
     }
-    if !(1..=10).contains(&a.stones) || a.random_min > a.random_max {
+    if !(1..=qawale::game::MAX_STONES_PER_PLAYER).contains(&a.stones) || a.random_min > a.random_max {
         usage("paramètres incohérents");
     }
     a

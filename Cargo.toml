@@ -5,6 +5,10 @@ edition = "2024"
 
 [dependencies]
 
+[features]
+# Coups sur 128 bits : jusqu'à 12 galets par joueur au lieu de 10 (un peu plus lent ; la version par défaut est inchangée).
+more-stones = []
+
 [profile.release]
 lto = true
 codegen-units = 1

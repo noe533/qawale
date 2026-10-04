@@ -1,5 +1,5 @@
 use qawale::bot::{Bot, WIN};
-use qawale::game::{Game, Move, Status, STONES_PER_PLAYER};
+use qawale::game::{Game, Move, Status, MAX_STONES_PER_PLAYER, STONES_PER_PLAYER};
 use qawale::player::{BotSpec, Player, SPEC_HELP};
 use qawale::ui::{parse_move, player_name, render};
 use std::io::{self, BufRead, Write};
@@ -59,7 +59,7 @@ fn parse_args() -> Options {
             "--time" => o.time = val.and_then(|s| s.parse().ok()).unwrap_or_else(|| usage()),
             "--depth" => o.depth = Some(val.and_then(|s| s.parse().ok()).unwrap_or_else(|| usage())),
             "--stones" => {
-                o.stones = val.and_then(|s| s.parse().ok()).filter(|n| (1..=10).contains(n)).unwrap_or_else(|| usage())
+                o.stones = val.and_then(|s| s.parse().ok()).filter(|n| (1..=MAX_STONES_PER_PLAYER).contains(n)).unwrap_or_else(|| usage())
             }
             "--no-color" => {
                 o.ansi = false;
@@ -79,10 +79,11 @@ fn parse_args() -> Options {
 fn usage() -> ! {
     eprintln!(
         "usage: qawale [--mode hb|bh|hh|bb] [--bot BOT] [--red human|BOT] [--yellow human|BOT]
-              [--time SECONDS] [--depth N] [--stones 1..10] [--no-color] [--no-analysis]
+              [--time SECONDS] [--depth N] [--stones N] [--no-color] [--no-analysis]
   hb = human (Red, moves first) vs bot, bh = bot vs human (Yellow), hh = two humans, bb = two bots
   --time: thinking time per move of the bots (default 2) ; --depth: adds depth=N to the bots
-  --stones: stones per player (default 8, the standard rule)
+  --stones: stones per player, 1 to {MAX_STONES_PER_PLAYER} (default 8, the standard rule ; up to 12 when
+            compiled with --features more-stones)
   --no-analysis: do not rate the human moves (rank among all moves, according to the --bot engine)
 
 {SPEC_HELP}"

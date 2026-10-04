@@ -464,3 +464,11 @@ acceptés) ; options `--no-analysis`, `--red`, `--yellow` (`--sans-analyse`, `--
 **Données** : gen_data écrit maintenant une colonne `best_move_en` (notation anglaise) ; les fichiers antérieurs ont `best_move`
 (notation h/b/g/d, relue par `ui::parse_move_fr`). move_features, prefix_features et train_policy.py choisissent selon la colonne.
 Outils de développement (examples/, train/), NOTES.md et commentaires du code restent en français.
+
+## Option de compilation `more-stones` (2026-10-04)
+`cargo build --release --features more-stones` : coups sur u128 (`game::MoveBits`) et `MAX_STONES_PER_PLAYER` = 12 au lieu de 10
+(limite suivante : longueur de chemin sur 5 bits et piles sur u64, 8 + 2n ≤ 32). La version par défaut est **strictement
+inchangée** (u64 ; mêmes 13 849 117 nœuds à prof. 3 sur 300 positions, réseau v3). `more-stones` : 13 852 652 nœuds (entrées de
+table plus grosses), **~2-3 % plus lente** (1 thread, 60 positions : 1,11-1,13 s contre 1,09-1,10 s) ; tests verts dans les deux
+versions (parties aléatoires à 12 galets). Les réseaux n'ont pas été entraînés au-delà de 10 galets.
+Astuce : compiler `more-stones` dans un autre dossier (`--target-dir target/more-stones`) pour ne pas écraser la version officielle.

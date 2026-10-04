@@ -14,10 +14,22 @@ pub const NEUTRAL: u8 = 2;
 
 pub const STONES_PER_PLAYER: u8 = 8;
 
-/// Limite imposée par le codage des coups sur 64 bits. Après un coup, au moins 2 cases
-/// sont occupées, donc la pile jouée compte au plus 8 + 2n − 1 galets (placé compris) :
-/// il faut 4 + 5 + 2 × (7 + 2n) ≤ 64 bits, soit n ≤ 10 (63 bits).
+/// Limite imposée par le codage des coups. Après un coup, au moins 2 cases sont occupées, donc la
+/// pile jouée compte au plus 8 + 2n − 1 galets (placé compris) :
+/// - version officielle, coups sur 64 bits : 4 + 5 + 2 × (7 + 2n) ≤ 64, soit n ≤ 10 (63 bits) ;
+/// - option de compilation `more-stones`, coups sur 128 bits : la limite devient la longueur du chemin
+///   (5 bits, ≤ 31 directions) et les piles sur 64 bits (≤ 32 galets) : 8 + 2n ≤ 32, soit n ≤ 12.
+#[cfg(not(feature = "more-stones"))]
 pub const MAX_STONES_PER_PLAYER: u8 = 10;
+#[cfg(feature = "more-stones")]
+pub const MAX_STONES_PER_PLAYER: u8 = 12;
+
+/// Entier qui contient un coup : u64 dans la version officielle (aucun surcoût), u128 avec l'option
+/// de compilation `more-stones` (`cargo run --release --features more-stones`).
+#[cfg(not(feature = "more-stones"))]
+pub type MoveBits = u64;
+#[cfg(feature = "more-stones")]
+pub type MoveBits = u128;
 
 /// Directions : haut (+1 ligne), bas, gauche, droite. `d ^ 1` = direction opposée.
 pub const UP: u8 = 0;
@@ -171,15 +183,14 @@ static ZOBRIST: [[[u64; 8]; MAX_STACK * 3]; 16] = {
 /// (À vérifier dans la règle officielle ; modifiable ici.)
 pub const DOUBLE_ALIGNMENT_MOVER_WINS: bool = true;
 
-/// Un coup compacté dans un u64 :
+/// Un coup compacté dans un `MoveBits` (u64, ou u128 avec `more-stones`) :
 /// bits 0-3 case de départ, bits 4-8 longueur du chemin, bits 9.. directions (2 bits chacune).
-/// Longueur max = 24 tuiles → 4 + 5 + 48 = 57 bits.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct Move(pub u64);
+pub struct Move(pub MoveBits);
 
 impl Move {
     #[inline]
-    pub fn new(sq: u8) -> Move { Move(sq as u64) }
+    pub fn new(sq: u8) -> Move { Move(sq as MoveBits) }
     #[inline]
     pub fn square(self) -> u8 { (self.0 & 0xF) as u8 }
     #[inline]
@@ -191,9 +202,9 @@ impl Move {
     pub fn dir(self, i: u32) -> u8 { ((self.0 >> (9 + 2 * i)) & 3) as u8 }
     #[inline]
     fn push(self, d: u8) -> Move {
-        let l = self.len() as u64;
+        let l = self.len() as MoveBits;
         let base = (self.0 & !(0x1F << 4)) | ((l + 1) << 4);
-        Move(base | ((d as u64) << (9 + 2 * l)))
+        Move(base | ((d as MoveBits) << (9 + 2 * l)))
     }
 
     /// Image du coup par la symétrie `s`.
@@ -775,7 +786,7 @@ mod tests {
         for (i, &d) in dirs.iter().enumerate() {
             assert_eq!(m.dir(i as u32), d);
         }
-        assert!(9 + 2 * max_len <= 64);
+        assert!(9 + 2 * max_len <= MoveBits::BITS as usize && max_len <= 31);
     }
 
     /// Beaucoup de parties à 10 galets pour couvrir des piles hautes.

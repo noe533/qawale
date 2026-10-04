@@ -88,7 +88,7 @@ fn parse_args() -> Args {
     if a.bots.len() < 2 {
         usage("il faut au moins deux --bot");
     }
-    if !(1..=10).contains(&a.stones) {
+    if !(1..=qawale::game::MAX_STONES_PER_PLAYER).contains(&a.stones) {
         usage("--stones entre 1 et 10");
     }
     // Deux joueurs du même nom rendraient le rapport ambigu.
