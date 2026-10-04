@@ -5,7 +5,7 @@
 //! Ce module est la seule définition des caractéristiques : l'export pour Python et le bot
 //! utilisent le même code, ce qui garantit qu'on évalue en partie exactement ce qu'on a appris.
 
-use crate::game::{Game, LINES, MAX_STACK, NEIGHBOR, NEUTRAL, NONE};
+use crate::game::{Game, StackBits, LINES, MAX_STACK, NEIGHBOR, NEUTRAL, NONE};
 use std::sync::OnceLock;
 
 /// Caractéristiques calculées pour chaque camp.
@@ -69,7 +69,7 @@ pub(crate) fn reach_table() -> &'static [[u16; MAX_STACK + 1]; 16] {
 }
 
 /// Bits de poids faible de chaque galet dans le codage 2 bits/galet d'une pile.
-const PAIR_LO: u64 = 0x5555_5555_5555_5555;
+const PAIR_LO: StackBits = StackBits::MAX / 3; // 0x5555…
 
 /// Groupes de caractéristiques coûteux, que l'on peut ne pas calculer (valeur 0) quand leurs
 /// poids sont nuls : sans eux, le parcours des piles n'est nécessaire qu'en présence d'une ligne de 3.
@@ -157,7 +157,7 @@ pub fn features_with(g: &Game, mask: FeatureMask) -> [f32; NUM_FEATURES] {
         occ &= occ - 1;
         let h = g.heights[sq] as u32;
         let st = g.stacks[sq];
-        let valid = PAIR_LO & ((1u64 << (2 * h)) - 1);
+        let valid = PAIR_LO & (((1 as StackBits) << (2 * h)) - 1);
         let lo = st & PAIR_LO;
         let hi = (st >> 1) & PAIR_LO;
         // Galets de chaque couleur, un bit en position 2i pour le galet d'indice i (0 = bas).
@@ -189,7 +189,7 @@ pub fn features_with(g: &Game, mask: FeatureMask) -> [f32; NUM_FEATURES] {
                 buried[s][1] += ((mine >> (2 * (h - 3))) & 1) as u32;
             }
             if h >= 4 {
-                buried[s][2] += (mine & ((1u64 << (2 * (h - 3))) - 1)).count_ones();
+                buried[s][2] += (mine & (((1 as StackBits) << (2 * (h - 3))) - 1)).count_ones();
             }
         }
     }

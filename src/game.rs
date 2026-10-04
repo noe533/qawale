@@ -14,15 +14,16 @@ pub const NEUTRAL: u8 = 2;
 
 pub const STONES_PER_PLAYER: u8 = 8;
 
-/// Limite imposée par le codage des coups. Après un coup, au moins 2 cases sont occupées, donc la
-/// pile jouée compte au plus 8 + 2n − 1 galets (placé compris) :
-/// - version officielle, coups sur 64 bits : 4 + 5 + 2 × (7 + 2n) ≤ 64, soit n ≤ 10 (63 bits) ;
-/// - option de compilation `more-stones`, coups sur 128 bits : la limite devient la longueur du chemin
-///   (5 bits, ≤ 31 directions) et les piles sur 64 bits (≤ 32 galets) : 8 + 2n ≤ 32, soit n ≤ 12.
+/// Limite imposée par le codage des coups et des piles. Après un coup, au moins 2 cases sont occupées,
+/// donc la pile jouée compte au plus 8 + 2n − 1 galets (placé compris), soit 7 + 2n directions :
+/// - version officielle (coups et piles sur 64 bits, longueur sur 5 bits) : 4 + 5 + 2 × (7 + 2n) ≤ 64,
+///   soit n ≤ 10 (63 bits) ;
+/// - option de compilation `more-stones` (coups et piles sur 128 bits, longueur sur 6 bits) :
+///   4 + 6 + 2 × (7 + 2n) ≤ 128, soit n ≤ 26 (128 bits ; piles : 8 + 2n = 60 ≤ 64 galets).
 #[cfg(not(feature = "more-stones"))]
 pub const MAX_STONES_PER_PLAYER: u8 = 10;
 #[cfg(feature = "more-stones")]
-pub const MAX_STONES_PER_PLAYER: u8 = 12;
+pub const MAX_STONES_PER_PLAYER: u8 = 26;
 
 /// Entier qui contient un coup : u64 dans la version officielle (aucun surcoût), u128 avec l'option
 /// de compilation `more-stones` (`cargo run --release --features more-stones`).
@@ -30,6 +31,22 @@ pub const MAX_STONES_PER_PLAYER: u8 = 12;
 pub type MoveBits = u64;
 #[cfg(feature = "more-stones")]
 pub type MoveBits = u128;
+
+/// Contenu d'une pile (2 bits par galet, le bas dans les bits faibles) : u64 (32 galets au plus) dans la
+/// version officielle, u128 (64 galets) avec `more-stones`.
+#[cfg(not(feature = "more-stones"))]
+pub type StackBits = u64;
+#[cfg(feature = "more-stones")]
+pub type StackBits = u128;
+
+/// Bits du champ « longueur du chemin » d'un coup : 5 (≤ 31 directions), 6 avec `more-stones` (≤ 63).
+#[cfg(not(feature = "more-stones"))]
+const LEN_BITS: u32 = 5;
+#[cfg(feature = "more-stones")]
+const LEN_BITS: u32 = 6;
+const LEN_MASK: MoveBits = (1 << LEN_BITS) - 1;
+/// Position de la première direction dans un coup (après 4 bits de case et le champ longueur).
+const DIR_SHIFT: u32 = 4 + LEN_BITS;
 
 /// Directions : haut (+1 ligne), bas, gauche, droite. `d ^ 1` = direction opposée.
 pub const UP: u8 = 0;
@@ -184,7 +201,7 @@ static ZOBRIST: [[[u64; 8]; MAX_STACK * 3]; 16] = {
 pub const DOUBLE_ALIGNMENT_MOVER_WINS: bool = true;
 
 /// Un coup compacté dans un `MoveBits` (u64, ou u128 avec `more-stones`) :
-/// bits 0-3 case de départ, bits 4-8 longueur du chemin, bits 9.. directions (2 bits chacune).
+/// bits 0-3 case de départ, puis la longueur du chemin (LEN_BITS bits), puis les directions (2 bits chacune).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Move(pub MoveBits);
 
@@ -194,17 +211,17 @@ impl Move {
     #[inline]
     pub fn square(self) -> u8 { (self.0 & 0xF) as u8 }
     #[inline]
-    pub fn len(self) -> u32 { ((self.0 >> 4) & 0x1F) as u32 }
+    pub fn len(self) -> u32 { ((self.0 >> 4) & LEN_MASK) as u32 }
     /// Coup vide (aucune direction) : jamais un coup légal, sert de valeur « aucun coup ».
     #[inline]
     pub fn is_empty(self) -> bool { self.len() == 0 }
     #[inline]
-    pub fn dir(self, i: u32) -> u8 { ((self.0 >> (9 + 2 * i)) & 3) as u8 }
+    pub fn dir(self, i: u32) -> u8 { ((self.0 >> (DIR_SHIFT + 2 * i)) & 3) as u8 }
     #[inline]
     fn push(self, d: u8) -> Move {
         let l = self.len() as MoveBits;
-        let base = (self.0 & !(0x1F << 4)) | ((l + 1) << 4);
-        Move(base | ((d as MoveBits) << (9 + 2 * l)))
+        let base = (self.0 & !(LEN_MASK << 4)) | ((l + 1) << 4);
+        Move(base | ((d as MoveBits) << (DIR_SHIFT as MoveBits + 2 * l)))
     }
 
     /// Image du coup par la symétrie `s`.
@@ -288,7 +305,7 @@ pub struct Game {
     pub tops_yellow: u16,
     pub tops_neutral: u16,
     pub heights: [u8; 16],
-    pub stacks: [u64; 16],
+    pub stacks: [StackBits; 16],
     pub reserve: [u8; 2],
     pub player: u8,
     /// Hachage Zobrist de la position vue à travers chacune des 8 symétries.
@@ -431,7 +448,7 @@ impl Game {
     #[inline]
     fn push_stone(&mut self, sq: usize, color: u8) {
         let h = self.heights[sq];
-        self.stacks[sq] |= (color as u64) << (2 * h);
+        self.stacks[sq] |= (color as StackBits) << (2 * h);
         self.heights[sq] = h + 1;
         self.xor_hash(sq, h, color);
         self.set_top_bit(sq, color);
@@ -441,7 +458,7 @@ impl Game {
     fn pop_stone(&mut self, sq: usize) {
         let h = self.heights[sq] - 1;
         self.xor_hash(sq, h, self.stone(sq, h));
-        self.stacks[sq] &= !(3u64 << (2 * h));
+        self.stacks[sq] &= !((3 as StackBits) << (2 * h));
         self.heights[sq] = h;
         let top = if h == 0 { NONE } else { self.stone(sq, h - 1) };
         self.set_top_bit(sq, top);
@@ -450,10 +467,10 @@ impl Game {
     /// Pose un galet du joueur courant sur `sq` et soulève toute la pile.
     /// Renvoie (contenu de la pile, hauteur). Le joueur courant change.
     #[inline]
-    fn place_and_lift(&mut self, sq: usize) -> (u64, u32) {
+    fn place_and_lift(&mut self, sq: usize) -> (StackBits, u32) {
         let p = self.player;
         let h = self.heights[sq];
-        let stack = self.stacks[sq] | ((p as u64) << (2 * h));
+        let stack = self.stacks[sq] | ((p as StackBits) << (2 * h));
         for i in 0..h {
             self.xor_hash(sq, i, self.stone(sq, i));
         }
@@ -629,7 +646,7 @@ fn walk<O: StoneObserver, F: FnMut(Move, &Game, &O) -> bool>(
     g: &mut Game,
     sq: usize,
     prev: u8,
-    hand: u64,
+    hand: StackBits,
     remaining: u32,
     mv: Move,
     guide: Option<&PathGuide>,
@@ -682,7 +699,7 @@ fn step<O: StoneObserver, F: FnMut(Move, &Game, &O) -> bool>(
     g: &mut Game,
     d: u8,
     n: usize,
-    hand: u64,
+    hand: StackBits,
     remaining: u32,
     mv: Move,
     guide: Option<&PathGuide>,
@@ -775,7 +792,7 @@ mod tests {
         }
     }
 
-    /// Le plus long coup possible (27 directions à 10 galets) tient dans le u64.
+    /// Le plus long coup possible (7 + 2n directions) tient dans un coup, et la plus haute pile dans une pile.
     #[test]
     fn longest_move_fits() {
         let max_len = 8 + 2 * MAX_STONES_PER_PLAYER as usize - 1;
@@ -786,7 +803,8 @@ mod tests {
         for (i, &d) in dirs.iter().enumerate() {
             assert_eq!(m.dir(i as u32), d);
         }
-        assert!(9 + 2 * max_len <= MoveBits::BITS as usize && max_len <= 31);
+        assert!(DIR_SHIFT as usize + 2 * max_len <= MoveBits::BITS as usize && max_len < (1 << LEN_BITS));
+        assert!(2 * MAX_STACK <= StackBits::BITS as usize);
     }
 
     /// Beaucoup de parties à 10 galets pour couvrir des piles hautes.

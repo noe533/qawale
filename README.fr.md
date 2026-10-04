@@ -58,12 +58,12 @@ comptent pour un.
 ou « forced loss in N » sont des certitudes (N en demi-coups) ; sinon le score est une estimation
 (négatif = bon pour vous).
 
-**Plus de 10 galets par joueur** : les coups sont stockés sur des entiers de 64 bits, ce qui limite la partie à 10 galets
-par joueur. Une compilation séparée les stocke sur 128 bits et autorise jusqu'à 12 (environ 2-3 % plus lente ; les réseaux
+**Plus de 10 galets par joueur** : les coups et les piles sont stockés sur des entiers de 64 bits, ce qui limite la partie à
+10 galets par joueur. Une compilation séparée les stocke sur 128 bits et autorise jusqu'à **26** (plus lente ; les réseaux
 n'ont été entraînés que jusqu'à 10, elle joue donc ces parties moins bien). La version par défaut est inchangée :
 
 ```sh
-cargo run --release --features more-stones -- --mode hb --stones 12 --time 2 --bot "full nnue=weights/nnue_h64_v3.bin"
+cargo run --release --features more-stones --target-dir target/more-stones -- --mode hb --stones 20 --time 2 --bot "full nnue=weights/nnue_h64_v3.bin"
 ```
 
 > ⚠ `.cargo/config.toml` compile pour le processeur de la machine (`target-cpu=native`, AVX2…), ce qui

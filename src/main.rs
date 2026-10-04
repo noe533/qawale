@@ -82,7 +82,7 @@ fn usage() -> ! {
               [--time SECONDS] [--depth N] [--stones N] [--no-color] [--no-analysis]
   hb = human (Red, moves first) vs bot, bh = bot vs human (Yellow), hh = two humans, bb = two bots
   --time: thinking time per move of the bots (default 2) ; --depth: adds depth=N to the bots
-  --stones: stones per player, 1 to {MAX_STONES_PER_PLAYER} (default 8, the standard rule ; up to 12 when
+  --stones: stones per player, 1 to {MAX_STONES_PER_PLAYER} (default 8, the standard rule ; up to 26 when
             compiled with --features more-stones)
   --no-analysis: do not rate the human moves (rank among all moves, according to the --bot engine)
 

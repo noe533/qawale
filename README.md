@@ -56,12 +56,12 @@ count as one.
 **Reading the bot's evaluation** (shown after each of its moves, from its own point of view): "forced win in N"
 and "forced loss in N" are certain (N in plies); otherwise the score is an estimate (negative = good for you).
 
-**More than 10 stones per player**: moves are stored in 64-bit integers, which limits the game to 10 stones per
-player. A separate build stores them in 128 bits and allows up to 12 (about 2-3 % slower; the networks were only
-trained up to 10, so it plays these games less well). The default build is unchanged:
+**More than 10 stones per player**: moves and stacks are stored in 64-bit integers, which limits the game to 10 stones
+per player. A separate build stores them in 128 bits and allows up to **26** (slower; the networks were only trained up
+to 10, so it plays these games less well). The default build is unchanged:
 
 ```sh
-cargo run --release --features more-stones -- --mode hb --stones 12 --time 2 --bot "full nnue=weights/nnue_h64_v3.bin"
+cargo run --release --features more-stones --target-dir target/more-stones -- --mode hb --stones 20 --time 2 --bot "full nnue=weights/nnue_h64_v3.bin"
 ```
 
 > ⚠ `.cargo/config.toml` compiles for the local CPU (`target-cpu=native`, AVX2…), which makes the evaluation

@@ -472,3 +472,9 @@ inchangée** (u64 ; mêmes 13 849 117 nœuds à prof. 3 sur 300 positions, rése
 table plus grosses), **~2-3 % plus lente** (1 thread, 60 positions : 1,11-1,13 s contre 1,09-1,10 s) ; tests verts dans les deux
 versions (parties aléatoires à 12 galets). Les réseaux n'ont pas été entraînés au-delà de 10 galets.
 Astuce : compiler `more-stones` dans un autre dossier (`--target-dir target/more-stones`) pour ne pas écraser la version officielle.
+- **Élargi le 2026-10-04 : `more-stones` va jusqu'à 26 galets par joueur.** Piles aussi en u128 (`game::StackBits`, 64 galets
+  au plus) et champ longueur des coups sur 6 bits (`LEN_BITS`, 63 directions) : 4 + 6 + 2 × (7 + 2n) ≤ 128 ⇒ n ≤ 26
+  (8 + 2n = 60 ≤ 64). Version officielle toujours strictement inchangée (u64, 5 bits ; mêmes 13 849 117 nœuds).
+  Tests verts dans les deux versions (parties aléatoires à 26 galets). Partie bot contre bot à 26 galets, 0,5 s/coup :
+  finie au 28e demi-coup (sur 52), profondeur 4 à 6, piles jusqu'à 8 galets, 12 s au total ⇒ jouable : les parties se
+  décident avant que les piles deviennent très hautes (le nombre de chemins croît d'un facteur ~2,5-3 par galet de hauteur).
