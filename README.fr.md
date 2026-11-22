@@ -7,7 +7,19 @@ optimisée et évaluation par petit réseau de neurones de type **NNUE**, entra�
 l'IA joue contre elle-même. On peut jouer contre elle dans le terminal.
 
 > Ce README présente le projet. Le journal de recherche détaillé (toutes les mesures, les essais
-> ratés, les pièges rencontrés) est dans [`NOTES.md`](NOTES.md).
+> ratés, les pièges rencontrés) est dans [`JOURNAL.md`](JOURNAL.md).
+>
+> Cette branche est une version allégée pour la lecture : les expériences abandonnées et les anciens
+> réseaux ont été retirés. L'historique complet est sur la branche `master`.
+
+## Par où commencer la lecture
+
+1. **`src/game.rs`** : règles, représentation en bitboards, génération des coups sans allocation, symétries, hachage de Zobrist.
+2. **`src/bot.rs`** : la recherche (négamax alpha-bêta, table de transposition, tri des coups, PVS, killers, historique).
+3. **`src/nnue.rs`** : l'évaluation par réseau, sa mise à jour incrémentale et sa quantification en entiers.
+4. **`examples/matches.rs`** : comment la force est mesurée (tournois, Elo, intervalle de confiance).
+
+Les tests sont en bas de chaque fichier (`cargo test --release`).
 
 ## Le jeu
 
@@ -83,10 +95,10 @@ Tournois à 10 galets, 100 ms par coup, 500 parties par affrontement, ouvertures
 | Réseau v3, boucle avec étiquettes à prof. 5, contre v2 | **+19 Elo** (+2 à +37) |
 | **Total, mesuré directement** : bot actuel contre le bot d'origine (alpha-bêta + table, évaluation à la main) | **+400 Elo** (+364 à +443) : 417 victoires, 75 nuls, 8 défaites |
 
-Essais sans gain mesuré, gardés dans le code mais désactivés et documentés dans `NOTES.md` : tête de politique
+Essais sans gain mesuré, gardés dans le code mais désactivés et documentés dans `JOURNAL.md` : tête de politique
 (`politique=`), tri des chemins pas à pas (`chemins=`), réductions des coups tardifs (`lmr=`), règles apprises
 pour deviner le bon coup (arbres de décision, « machine » qui écrit le coup), poids du résultat réel des parties
-dans les étiquettes. La résolution exacte du jeu complet est hors de portée (mesures dans `NOTES.md`) ; les petites
+dans les étiquettes. La résolution exacte du jeu complet est hors de portée (mesures dans `JOURNAL.md`) ; les petites
 variantes de 1 à 4 galets par joueur sont des nuls (`solve_variants`).
 
 ## Comment fonctionne l'IA
@@ -152,9 +164,9 @@ champion actuel, et promotion seulement si l'amélioration est statistiquement n
 | `src/main.rs`, `src/ui.rs` | partie dans le terminal |
 | `examples/` | outils (tournois, mesures, génération de données) |
 | `train/` | scripts Python d'entraînement et boucles d'amélioration |
-| `weights/` | évaluations entraînées versionnées (`nnue_h64_v3.bin` = la meilleure, `v2` et `nnue_h64.bin` = les précédentes) |
+| `weights/` | évaluations entraînées versionnées (`nnue_h64_v3.bin`, le meilleur réseau, et ses sorties de référence) |
 | `data/` | données générées, régénérables (non versionné) |
-| `NOTES.md` | journal de recherche complet |
+| `JOURNAL.md` | journal de recherche complet |
 
 ## Décrire un bot
 
@@ -186,12 +198,9 @@ Tous se lancent avec `cargo run --release --example NOM -- [options]` (options d
 | `export_features`, `export_nnue` | convertit les positions en tableaux numpy pour Python |
 | `nnue_check` | vérifie que Rust et PyTorch calculent la même chose, mesure le coût du réseau |
 | `solve_variants` | résolution exacte depuis le début pour 1, 2, 3… galets par joueur |
-| `move_features`, `prefix_features` | exports pour apprendre des règles de choix de coups (par coup, par début de chemin) |
-| `eval_speed`, `bench`, `relabel`, `dupes` | coût des évaluations, résolution exacte, ré-étiquetage, transpositions |
+| `bench` | résolution exacte de positions |
 
-Scripts Python (`train/`) : `train_nnue.py` (réseau), `nnue_loop.py` (boucle de nuit du réseau), `train_policy.py`
-(tête de politique), `rules_test.py` et `prefix_test.py` (règles apprises), `train_eval.py` et `night_loop.py`
-(évaluation linéaire, première approche).
+Scripts Python (`train/`) : `train_nnue.py` (réseau), `nnue_loop.py` (boucle de nuit du réseau).
 
 Exemple, un tournoi :
 
@@ -201,8 +210,7 @@ cargo run --release --example matches -- --bot "classique@100" --bot "nnue@100 n
 
 ### Entraîner un réseau
 
-Prérequis Python : `numpy` et `torch` (GPU CUDA conseillé, ~1 min par entraînement), plus `scikit-learn` pour les
-tests de règles, par exemple dans un `.venv`.
+Prérequis Python : `numpy` et `torch` (GPU CUDA conseillé, ~1 min par entraînement), par exemple dans un `.venv`.
 
 ```sh
 # 1. Générer et étiqueter des parties (≈ 25-40 min pour 10 000 parties à 20 threads)

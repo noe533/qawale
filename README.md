@@ -7,7 +7,19 @@ and a small **NNUE**-style neural network evaluation, trained on games the AI pl
 You can play against it in the terminal.
 
 > This README presents the project. The detailed research log (every measurement, failed attempts, pitfalls)
-> is in [`NOTES.md`](NOTES.md), written in French; code comments are in French too.
+> is in [`JOURNAL.md`](JOURNAL.md), written in French; code comments are in French too.
+>
+> This branch is a trimmed version for reading: abandoned experiments and old networks were removed. The
+> complete history is on the `master` branch.
+
+## Where to start reading
+
+1. **`src/game.rs`**: rules, bitboard representation, allocation-free move generation, symmetries, Zobrist hashing.
+2. **`src/bot.rs`**: the search (negamax alpha-beta, transposition table, move ordering, PVS, killers, history).
+3. **`src/nnue.rs`**: the neural evaluation, its incremental update and its integer quantization.
+4. **`examples/matches.rs`**: how strength is measured (tournaments, Elo, confidence interval).
+
+The tests are at the bottom of each file (`cargo test --release`).
 
 ## The game
 
@@ -81,11 +93,11 @@ Tournaments with 10 stones, 100 ms per move, 500 games per match, all openings d
 | Network v3, loop with depth-5 labels, vs v2 | **+19 Elo** (+2 to +37) |
 | **Total, measured directly**: current bot vs the original bot (alpha-beta + table, hand-written evaluation) | **+400 Elo** (+364 to +443): 417 wins, 75 draws, 8 losses |
 
-Attempts without a measured gain, kept in the code but disabled and documented in `NOTES.md`: policy head
+Attempts without a measured gain, kept in the code but disabled and documented in `JOURNAL.md`: policy head
 (`policy=`), step-by-step path ordering (`paths=`), late move reductions (`lmr=`), learned rules to guess the best
 move (decision trees, a "machine" writing the move symbol by symbol), more weight on the actual game result in the
 labels, single-perspective network (`--single`). Solving the full game is out of reach (measurements in
-`NOTES.md`); the small variants with 1 to 4 stones per player are draws (`solve_variants`).
+`JOURNAL.md`); the small variants with 1 to 4 stones per player are draws (`solve_variants`).
 
 ## How the AI works
 
@@ -149,9 +161,9 @@ and promotion only if the improvement is statistically clear.
 | `src/main.rs`, `src/ui.rs` | playing in the terminal |
 | `examples/` | tools (tournaments, measurements, data generation) |
 | `train/` | Python training scripts and improvement loops |
-| `weights/` | versioned trained evaluations (`nnue_h64_v3.bin` = the best; `v2` and `nnue_h64.bin` = earlier ones) |
+| `weights/` | versioned trained evaluations (`nnue_h64_v3.bin`, the best network, and its reference outputs) |
 | `data/` | generated data, reproducible (not versioned) |
-| `NOTES.md` | full research log (French) |
+| `JOURNAL.md` | full research log (French) |
 
 ## Describing a bot
 
@@ -183,12 +195,9 @@ tools' output is in French).
 | `export_features`, `export_nnue` | converts positions into numpy arrays for Python |
 | `nnue_check` | checks that Rust and PyTorch compute the same thing, measures the network cost |
 | `solve_variants` | exact solving from the start for 1, 2, 3… stones per player |
-| `move_features`, `prefix_features` | exports to learn move-choice rules (per move, per path prefix) |
-| `eval_speed`, `bench`, `relabel`, `dupes` | evaluation cost, exact solving, relabelling, transpositions |
+| `bench` | exact solving of positions |
 
-Python scripts (`train/`): `train_nnue.py` (network), `nnue_loop.py` (overnight network loop), `train_policy.py`
-(policy head), `rules_test.py` and `prefix_test.py` (learned rules), `train_eval.py` and `night_loop.py`
-(linear evaluation, first approach).
+Python scripts (`train/`): `train_nnue.py` (network), `nnue_loop.py` (overnight network loop).
 
 Example, a tournament:
 
@@ -198,8 +207,7 @@ cargo run --release --example matches -- --bot "classic@100" --bot "nnue@100 nnu
 
 ### Training a network
 
-Python requirements: `numpy` and `torch` (CUDA GPU recommended, ~1 min per training), plus `scikit-learn` for the
-rule experiments, for example in a `.venv`.
+Python requirements: `numpy` and `torch` (CUDA GPU recommended, ~1 min per training), for example in a `.venv`.
 
 ```sh
 # 1. Generate and label games (≈ 25-40 min for 10,000 games on 20 threads)
