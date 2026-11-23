@@ -1,5 +1,5 @@
 //! Bot : négamax alpha-bêta avec approfondissement itératif, limite de temps
-//! et table de transposition (optionnellement modulo les 8 symétries du plateau).
+//! et table de transposition.
 
 use crate::features::{reach_table, LinearEval};
 use crate::game::{MoveBits, PathGuide, MAX_STACK};
@@ -12,13 +12,13 @@ use std::time::{Duration, Instant};
 
 pub const WIN: i32 = 1_000_000;
 const INF: i32 = i32::MAX / 2;
-/// Au-delà, un score est une victoire/défaite forcée (dépend de la distance au mat).
+/// Au-delà de ce seuil, un score est une victoire ou une défaite forcée.
 const WIN_BOUND: i32 = WIN - 100;
 
-/// Paramètres de la fonction d'évaluation (réglables, par exemple par matchs entre bots).
+/// Paramètres de l'évaluation écrite à la main.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EvalParams {
-    /// Poids d'un alignement non bloqué selon le nombre de sommets déjà en place (0 à 3).
+    /// Poids d'une ligne ouverte, selon le nombre de sommets déjà en place.
     pub line_weight: [i32; 4],
     /// Bonus par sommet contrôlé.
     pub surface: i32,
@@ -37,7 +37,7 @@ pub fn evaluate(g: &Game, p: &EvalParams) -> i32 {
     for &m in &LINES {
         let r = (red & m).count_ones() as usize;
         let y = (yellow & m).count_ones() as usize;
-        // r ou y vaut 4 seulement en position terminale, jamais évaluée ici.
+        // 4 sommets alignés : position terminale, jamais évaluée ici.
         if y == 0 && r < 4 {
             score += p.line_weight[r];
         }
@@ -49,7 +49,7 @@ pub fn evaluate(g: &Game, p: &EvalParams) -> i32 {
     if g.player == RED { score } else { -score }
 }
 
-/// Évaluation statique selon les réglages : réseau s'il y en a un, sinon linéaire apprise, sinon classique.
+/// Évaluation statique : réseau, sinon évaluation linéaire, sinon évaluation écrite à la main.
 #[inline]
 fn static_eval(g: &Game, nnue: Option<&Nnue>, linear: Option<&LinearEval>, p: &EvalParams) -> i32 {
     match (nnue, linear) {
@@ -59,11 +59,7 @@ fn static_eval(g: &Game, nnue: Option<&Nnue>, linear: Option<&LinearEval>, p: &E
     }
 }
 
-/// Guide des chemins (dernier étage) : intérêt, pour le joueur au trait, que son propre galet (le dernier
-/// déposé) finisse au sommet de chaque case — d'après les lignes qui la traversent : compléter une ligne de 3
-/// libre (gain), prolonger une ligne libre, bloquer une ligne de 3 adverse — puis, pour chaque case et chaque
-/// nombre de pas k, la meilleure valeur atteignable en exactement k pas (table d'atteinte sans demi-tour).
-/// Approximation : ignore les sommets modifiés en chemin par les autres galets.
+/// Option expérimentale `paths=` : intérêt de chaque case comme point d'arrivée du dernier galet.
 fn path_guide(g: &Game) -> PathGuide {
     let (me, opp) = (g.tops(g.player), g.tops(g.player ^ 1));
     let mut value = [0i32; 16];
@@ -103,15 +99,15 @@ fn plies_left(g: &Game) -> u32 {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TtMode {
-    /// Pas de table : chaque position est recalculée à chaque fois qu'on la rencontre.
+    /// Pas de table.
     Off,
     /// Table indexée par la position exacte.
     On,
-    /// Table indexée par la clé canonique : les 8 positions symétriques partagent une entrée.
+    /// Table indexée par la clé canonique : les positions symétriques partagent une entrée.
     Symmetric,
 }
 
-/// Profondeur maximale depuis la racine (une partie dure au plus 2 × 10 demi-coups).
+/// Profondeur maximale depuis la racine.
 const MAX_PLY: usize = 64;
 
 /// Priorités de tri, au-dessus de toute évaluation.
@@ -125,14 +121,15 @@ const UPPER: u8 = 2; // score <= valeur stockée
 #[derive(Clone, Copy, Default)]
 struct Entry {
     key: u64,
-    /// Meilleur coup, exprimé dans le repère canonique (0 = aucun).
+    /// Meilleur coup, dans le repère canonique (0 = aucun).
     mv: MoveBits,
     score: i32,
     depth: u8,
     flag: u8,
 }
 
-/// Table de transposition : seaux de 2 entrées (une « préférer la profondeur », une « toujours remplacer »).
+/// Table de transposition. Chaque seau a 2 entrées :
+/// une garde la recherche la plus profonde, l'autre est toujours remplacée.
 struct Tt {
     buckets: Vec<[Entry; 2]>,
     mask: usize,
@@ -163,8 +160,8 @@ impl Tt {
     }
 }
 
-/// Les scores de victoire dépendent de la distance à la racine : on les stocke
-/// relativement au nœud courant pour qu'ils restent valables à une autre profondeur.
+/// Les scores de victoire dépendent de la distance à la racine.
+/// On les stocke par rapport au nœud courant pour les réutiliser à une autre profondeur.
 #[inline]
 fn score_to_tt(s: i32, ply: u32) -> i32 {
     if s >= WIN_BOUND { s + ply as i32 } else if s <= -WIN_BOUND { s - ply as i32 } else { s }
@@ -182,7 +179,7 @@ pub struct SearchResult {
     pub nodes: u64,
     pub tt_hits: u64,
     pub elapsed: Duration,
-    /// Vrai si la recherche a atteint la fin de partie : le score est alors exact.
+    /// Vrai si la recherche a atteint la fin de partie : le score est exact.
     pub solved: bool,
 }
 
@@ -190,55 +187,45 @@ pub struct Bot {
     pub time_limit: Duration,
     pub max_depth: u32,
     pub tt_mode: TtMode,
-    /// Profondeur restante minimale pour consulter la table : près des feuilles,
-    /// un accès mémoire aléatoire peut coûter plus cher que le calcul qu'il évite.
+    /// Profondeur restante minimale pour consulter la table.
+    /// Près des feuilles, un accès mémoire coûte plus cher que le calcul.
     pub tt_min_depth: u32,
     /// Essayer d'abord le meilleur coup mémorisé dans la table.
     pub use_tt_move: bool,
-    /// `solve` par approfondissement itératif (remplit la table de coups pour l'ordonnancement).
+    /// Résolution exacte par approfondissement itératif.
     pub iterative_solve: bool,
     pub eval: EvalParams,
-    /// Évaluation apprise ; si présente, remplace `eval`.
+    /// Évaluation linéaire apprise. Remplace `eval` si présente.
     pub linear: Option<Arc<LinearEval>>,
-    /// Réseau NNUE ; si présent, remplace les deux autres évaluations.
+    /// Réseau NNUE. Remplace les deux autres évaluations si présent.
     pub nnue: Option<Arc<Nnue>>,
-    /// Politique « case de départ » posée sur l'accumulateur de `nnue` (même première couche) :
-    /// ordonne les cases de départ au dernier étage, à la place de l'historique.
+    /// Option expérimentale `policy=`.
     pub policy: Option<Arc<Policy>>,
-    /// Trier les coups des nœuds intérieurs (gain immédiat, coup mémorisé, coups « killer »,
-    /// puis évaluation de la position obtenue, apprise si chargée).
+    /// Trier les coups des nœuds intérieurs.
     pub ordering: bool,
     /// Recherche à fenêtre nulle (PVS) pour les coups après le premier.
     pub pvs: bool,
-    /// Au dernier étage (enfants = feuilles, non triés) : essayer les coups killers avant de générer.
+    /// Au dernier étage : essayer les coups killers avant de générer les autres.
     pub leaf_killers: bool,
-    /// Au dernier étage : générer d'abord les coups des cases de départ qui ont souvent coupé.
+    /// Au dernier étage : commencer par les cases de départ qui ont souvent coupé.
     pub history: bool,
-    /// Au dernier étage : ordonner les chemins pas à pas (`path_guide`). Désactivé par défaut : aucun gain
-    /// mesuré (rang du coup qui coupe inchangé), et ~10 % plus lent.
+    /// Option expérimentale `paths=`.
     pub path_order: bool,
-    /// LMR (réductions des coups tardifs) aux nœuds triés : coups au-delà des `lmr_full` premiers cherchés
-    /// 1 demi-coup moins profond (2 au-delà de `lmr_late` si la profondeur restante ≥ 4), à partir d'une
-    /// profondeur restante `lmr_min_depth` ; recherche normale si le coup surprend. Change le jeu : à juger par tournoi.
+    /// Option expérimentale `lmr=` (réduction des coups tardifs).
     pub lmr: bool,
     pub lmr_full: usize,
     pub lmr_late: usize,
     pub lmr_min_depth: u32,
     tt: Tt,
-    /// Historique par joueur au trait et case de départ du coup qui a provoqué une coupure
-    /// (pondéré par profondeur²), remis à zéro à chaque recherche.
+    /// Historique : score de chaque case de départ, augmenté à chaque coupure.
     hist: [[u32; 16]; 2],
-    /// Par demi-coup depuis la racine : deux coups ayant récemment provoqué une coupure.
+    /// Pour chaque profondeur : deux coups qui ont récemment provoqué une coupure.
     killers: Vec<[Move; 2]>,
-    /// Par demi-coup depuis la racine : coups à trier (réutilisés, pas d'allocation en recherche).
+    /// Tampons de coups réutilisés, pour ne pas allouer pendant la recherche.
     move_bufs: Vec<Vec<(Move, i32)>>,
     nodes: u64,
     tt_hits: u64,
-    /// Qualité du tri, par profondeur restante (indice min(prof., 7)) :
-    /// [nœuds intérieurs, coupures bêta, coupures dès le 1er coup essayé, somme des rangs du coup coupant].
-    /// (Les coupures directes par la table, avant tout coup, ne sont pas comptées.)
-    /// Ligne 0 (diagnostic du dernier étage) : [killers essayés, killers ayant coupé, —, coupures pendant la
-    /// génération, somme des coups essayés depuis les cases précédentes, somme des rangs dans la case du coup].
+    /// Statistiques sur la qualité du tri, par profondeur restante.
     pub cut_stats: [[u64; 6]; 8],
     deadline: Instant,
     stopped: bool,
@@ -255,7 +242,7 @@ impl Bot {
         Bot { time_limit, max_depth, tt_mode, tt_min_depth: 1, use_tt_move: true, iterative_solve: true, eval: EvalParams::default(), linear: None, nnue: None, policy: None, ordering: true, pvs: true, leaf_killers: true, history: true, path_order: false, lmr: false, lmr_full: 3, lmr_late: 12, lmr_min_depth: 3, tt, hist: [[0; 16]; 2], killers: vec![[Move(0); 2]; MAX_PLY], move_bufs: vec![Vec::new(); MAX_PLY], nodes: 0, tt_hits: 0, cut_stats: [[0; 6]; 8], deadline: Instant::now(), stopped: false }
     }
 
-    /// Clé de table et symétrie menant au repère dans lequel les coups sont stockés.
+    /// Clé de table et symétrie du repère où les coups sont stockés.
     #[inline]
     fn key(&self, g: &Game) -> (u64, usize) {
         match self.tt_mode {
@@ -284,8 +271,8 @@ impl Bot {
         if self.stopped {
             return 0;
         }
-        // Chercher plus loin que la fin de partie ne sert à rien ; borner la profondeur
-        // permet aussi de réutiliser une position résolue quelle que soit la profondeur demandée.
+        // Inutile de chercher plus loin que la fin de la partie.
+        // Une position résolue est alors réutilisable à toute profondeur.
         let depth = depth.min(plies_left(g));
         if depth == 0 {
             return static_eval(g, self.nnue.as_deref(), self.linear.as_deref(), &self.eval);
@@ -317,17 +304,14 @@ impl Bot {
 
         let mut best = -INF;
         let mut best_move = Move(0);
-        // PVS : au-delà du premier coup, on vérifie d'abord avec une fenêtre nulle que le coup ne fait
-        // pas mieux qu'alpha. Inutile si les enfants sont des feuilles (l'évaluation ignore la fenêtre).
+        // PVS : après le premier coup, une fenêtre nulle vérifie que le coup ne fait pas mieux.
+        // Inutile si les enfants sont des feuilles.
         let pvs = self.pvs && depth >= 2;
         let mut first = true;
-        // Avec un réseau : accumulateur tenu à jour pendant la génération des coups, pour évaluer
-        // chaque enfant sans tout recalculer (feuilles et tri).
+        // Accumulateur NNUE mis à jour pendant la génération des coups.
         let net = self.nnue.clone();
         let mut acc = net.as_deref().map(|n| Accumulator::new(n, g));
-        let mut count = 0u64; // coups essayés (rang du coup qui provoque une coupure)
-        // `reduce` > 0 : LMR, le coup (tardif dans l'ordre) est d'abord cherché moins profond en fenêtre nulle ;
-        // s'il surprend (fait mieux qu'alpha), il est recherché normalement.
+        let mut count = 0u64; // nombre de coups essayés
         let mut visit = |this: &mut Self, m: Move, child: &Game, alpha: &mut i32, leaf: Option<&Accumulator>, reduce: u32| {
             count += 1;
             let terminal = Self::terminal_score(child, ply + 1);
@@ -335,9 +319,9 @@ impl Bot {
                 .then(|| -this.negamax(child, depth - 1 - reduce, -*alpha - 1, -*alpha, ply + 1));
             let score = match terminal {
                 Some(s) => s,
-                // Recherche réduite : ne fait pas mieux qu'alpha ⇒ on s'en tient là.
+                // LMR : la recherche réduite ne fait pas mieux, on s'arrête là.
                 None if reduced.is_some_and(|s| this.stopped || s <= *alpha) => reduced.unwrap(),
-                // Enfant feuille évalué par l'accumulateur (équivaut à `negamax(child, 0)`).
+                // Enfant feuille : évalué directement par l'accumulateur.
                 None if depth == 1 && leaf.is_some() => {
                     this.nodes += 1;
                     if this.nodes & 1023 == 0 && Instant::now() >= this.deadline {
@@ -366,8 +350,8 @@ impl Bot {
             *alpha < beta && !this.stopped
         };
         if self.ordering && depth >= 2 {
-            // Nœud intérieur : les enfants sont eux-mêmes cherchés, un bon ordre paie largement
-            // le coût du tri. On génère, note et trie les coups, puis on rejoue chacun.
+            // Nœud intérieur : un bon ordre des coups vaut largement le coût du tri.
+            // On génère et on trie les coups, puis on les cherche un par un.
             let mut buf = std::mem::take(&mut self.move_bufs[ply as usize]);
             buf.clear();
             let killers = self.killers[ply as usize];
@@ -378,7 +362,7 @@ impl Bot {
                 let order = match Self::terminal_score(c, ply + 1) {
                     Some(s) if s > 0 => {
                         win = Some((m, s));
-                        return false; // aucun coup ne peut faire mieux qu'un gain immédiat
+                        return false; // gain immédiat : inutile de continuer
                     }
                     Some(s) => s,
                     None if Some(m) == tt_move => ORDER_TT,
@@ -393,7 +377,7 @@ impl Bot {
             });
             if let Some((m, s)) = win {
                 self.move_bufs[ply as usize] = buf;
-                // Gain immédiat trouvé pendant la génération : compté comme coupure au 1er coup.
+                // Gain immédiat trouvé pendant la génération.
                 let st = &mut self.cut_stats[(depth as usize).min(7)];
                 st[0] += 1;
                 st[1] += 1;
@@ -405,8 +389,7 @@ impl Bot {
                 return s;
             }
             buf.sort_unstable_by_key(|e| Reverse(e.1));
-            // LMR : au-delà des `lmr_full` premiers coups, les coups ordinaires (ni mémorisé ni killer) sont
-            // cherchés moins profond, sauf si la recherche atteint la fin de partie (valeurs exactes préservées).
+            // Option LMR.
             let lmr = self.lmr && depth >= self.lmr_min_depth && depth < plies_left(g);
             let (lmr_full, lmr_late) = (self.lmr_full, self.lmr_late);
             for (i, &(m, order)) in buf.iter().enumerate() {
@@ -421,10 +404,10 @@ impl Bot {
             }
             self.move_bufs[ply as usize] = buf;
         } else {
-            // Dernier étage (enfants = feuilles) : trier coûterait autant que tout évaluer. On essaie
-            // d'abord des coups devinés sans évaluation : le coup mémorisé, puis les killers ; s'ils
-            // provoquent une coupure, on évite de générer les autres.
-            let mut tried = [Move(0); 3]; // Move(0) n'est jamais un coup légal (longueur 0)
+            // Dernier étage : trier coûterait autant que tout évaluer.
+            // On essaie d'abord le coup mémorisé et les killers.
+            // S'ils provoquent une coupure, on évite de générer les autres coups.
+            let mut tried = [Move(0); 3];
             let mut go_on = true;
             if let Some(tm) = tt_move {
                 tried[0] = tm;
@@ -435,20 +418,18 @@ impl Bot {
                     if go_on && k != Move(0) && !tried.contains(&k) && g.check_move(k).is_ok() {
                         tried[1 + i] = k;
                         go_on = visit(self, k, &g.play(k), &mut alpha, None, 0);
-                        self.cut_stats[0][0] += 1; // [0] inutilisé ailleurs : killers essayés / ayant coupé
+                        self.cut_stats[0][0] += 1;
                         self.cut_stats[0][1] += !go_on as u64;
                     }
                 }
             }
             if go_on {
-                // Cases de départ dans l'ordre de l'historique : d'abord celles qui ont souvent coupé.
-                // Ou, si une politique apprise est chargée (avec le réseau), dans l'ordre de ses scores.
+                // Cases de départ dans l'ordre de l'historique.
                 let policy_scores = match (&self.policy, &acc) {
                     (Some(p), Some(a)) => Some(a.policy(p, g.player)),
                     _ => None,
                 };
                 let use_history = self.history || policy_scores.is_some();
-                // Chemins : à chaque pas, d'abord la direction d'où son propre galet peut finir sur la meilleure case.
                 let guide = self.path_order.then(|| path_guide(g));
                 let (mut sqs, mut n) = ([0u8; 16], 0);
                 if let Some(sc) = policy_scores {
@@ -486,7 +467,7 @@ impl Bot {
                         n += 1;
                     }
                 }
-                // Diagnostic : pour le coup qui coupe, coups essayés depuis les cases précédentes et rang dans sa case.
+                // Statistiques.
                 let (mut cur_sq, mut within, mut before, mut cut_at) = (u8::MAX, 0u64, 0u64, None);
                 let mut rest = |m: Move, child: &Game, a: &Option<Accumulator>| {
                     if tried.contains(&m) {
@@ -526,8 +507,8 @@ impl Bot {
                 st[3] += count;
             }
         }
-        // Coup « killer » : il a réfuté cette position, il réfutera sans doute ses voisines.
-        // Historique : la case de départ du coup qui coupe, pondérée par la profondeur.
+        // Killer : un coup qui a réfuté cette position réfutera sans doute ses voisines.
+        // Historique : on récompense la case de départ du coup qui coupe.
         if best >= beta && !self.stopped && best_move != Move(0) {
             self.hist[g.player as usize][best_move.square() as usize] += depth * depth;
             let k = &mut self.killers[ply as usize];
@@ -550,7 +531,7 @@ impl Bot {
         best
     }
 
-    /// Cherche le meilleur coup pour le joueur au trait (la position ne doit pas être terminale).
+    /// Cherche le meilleur coup pour le joueur au trait.
     pub fn search(&mut self, g: &Game) -> SearchResult {
         let start = Instant::now();
         self.deadline = start + self.time_limit;
@@ -561,7 +542,7 @@ impl Bot {
         self.cut_stats = [[0; 6]; 8];
         self.hist = [[0; 16]; 2];
 
-        // Coups racine, dédoublonnés par position résultante (à symétrie près si activé).
+        // Coups racine, sans doublons (même position à symétrie près).
         let mut seen = HashSet::new();
         let mut root: Vec<(Move, Game, i32)> = Vec::new();
         g.for_each_child(|m, c| {
@@ -620,8 +601,8 @@ impl Bot {
                 alpha = alpha.max(score);
             }
             if self.stopped {
-                // Itération incomplète : l'ancien meilleur coup a été évalué en premier,
-                // donc le meilleur coup partiel est au moins aussi fiable.
+                // Itération interrompue : l'ancien meilleur coup a été cherché en premier,
+                // donc le résultat partiel reste utilisable.
                 if completed > 0 {
                     best = iter_best;
                 }
@@ -649,11 +630,9 @@ impl Bot {
         }
     }
 
-    /// Analyse : valeur de **chaque** coup (une entrée par position résultante distincte, à symétrie près),
-    /// du point de vue du joueur au trait, triée du meilleur au moins bon. Contrairement à `search`, qui ne
-    /// prouve que « moins bon » pour les coups non retenus, chaque coup reçoit ici une valeur exacte à la
-    /// profondeur atteinte (fenêtre complète) : on peut donc les classer. Approfondissement itératif dans la
-    /// limite de `time_limit` ; renvoie la dernière profondeur entièrement terminée (au moins 1).
+    /// Analyse : valeur de chaque coup, triée du meilleur au moins bon.
+    /// Contrairement à `search`, chaque coup reçoit une valeur exacte, ce qui permet de les classer.
+    /// Renvoie la dernière profondeur terminée.
     pub fn analyze(&mut self, g: &Game) -> (u32, Vec<(Move, Game, i32)>) {
         self.stopped = false;
         self.killers.fill([Move(0); 2]);
@@ -667,7 +646,7 @@ impl Bot {
             }
             true
         });
-        // Profondeur 1 toujours complète (une évaluation par coup), sans limite de temps.
+        // La profondeur 1 est toujours terminée.
         let (nnue, linear) = (self.nnue.clone(), self.linear.clone());
         for e in list.iter_mut() {
             e.2 = Self::terminal_score(&e.1, 1).unwrap_or_else(|| -static_eval(&e.1, nnue.as_deref(), linear.as_deref(), &self.eval));
@@ -704,7 +683,7 @@ impl Bot {
         self.solve_within(g, Duration::from_secs(1 << 30)).unwrap()
     }
 
-    /// Comme `solve`, mais abandonne (`None`) au-delà de `limit`.
+    /// Comme `solve`, mais renvoie `None` au-delà de `limit`.
     pub fn solve_within(&mut self, g: &Game, limit: Duration) -> Option<i32> {
         self.deadline = Instant::now().checked_add(limit).unwrap_or_else(|| Instant::now() + Duration::from_secs(86_400 * 365));
         self.stopped = false;
@@ -723,7 +702,7 @@ impl Bot {
             if self.stopped {
                 return None;
             }
-            // Un gain ou une perte prouvés avant l'horizon sont déjà exacts.
+            // Un gain ou une perte prouvés sont déjà exacts.
             if score.abs() >= WIN_BOUND {
                 break;
             }

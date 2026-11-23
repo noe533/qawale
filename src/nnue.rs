@@ -1,31 +1,26 @@
 //! Évaluation par petit réseau de neurones (style NNUE).
 //!
-//! Entrées, du point de vue d'une couleur « moi » : pour chaque case, le nombre de galets
-//! (à moi / adverses / neutres) à chaque étage compté depuis le bas (0 à 5, puis « 6 et plus »
-//! regroupé : 0,12 % des galets), et la couleur du sommet. L'étage depuis le bas est le bon repère :
-//! le galet d'indice i tombe au pas i + 1 de la redistribution, et poser un galet ne change qu'une entrée.
+//! Entrées, du point de vue d'un joueur : pour chaque case et chaque étage compté depuis le bas,
+//! la couleur du galet (à moi, adverse, neutre). Plus la couleur du sommet.
+//! Les étages 6 et plus sont regroupés.
 //!
-//! Réseau : deux accumulateurs (point de vue du joueur au trait, puis de l'adversaire) de taille H,
-//! mêmes poids W1 ; ReLU bornée [0, 1] ; couche 2H → 32 ; ReLU bornée ; sortie scalaire.
-//! La sortie vise tanh(sortie) ≈ issue attendue ; le bot utilise `SCALE × sortie` (même échelle
-//! que l'évaluation linéaire apprise).
+//! Réseau : deux vues (joueur au trait, adversaire) de taille H, avec les mêmes poids.
+//! Puis une couche 2H → 32, puis une sortie. Activations : ReLU bornée entre 0 et 1.
 //!
-//! En recherche : accumulateurs entiers (i16) tenus à jour galet par galet pendant la génération
-//! des coups (`Accumulator`, `Game::for_each_child_obs`), couche 2 en u8 × i8 (AVX2 `maddubs`),
-//! couche 3 en f32. Les poids f32 d'origine restent disponibles (`forward_f32`) pour le contrôle
-//! contre PyTorch.
+//! En recherche, la première couche est un accumulateur entier mis à jour galet par galet.
+//! La deuxième couche est calculée en entiers 8 bits avec AVX2.
+//! Les poids f32 d'origine servent à vérifier le calcul contre PyTorch.
 //!
-//! Ce module est la seule définition des entrées : l'export (examples/export_nnue.rs) et le bot
-//! l'utilisent tous deux.
+//! Les entrées sont définies uniquement ici : l'export vers Python et le bot utilisent ce module.
 
 use crate::game::{Game, StoneObserver, NEUTRAL};
 
 /// Étages distingués : 0 à 5, puis « 6 et plus ».
 pub const LEVELS: usize = 7;
-/// Entrées par case : LEVELS étages × 3 couleurs relatives, puis 3 pour la couleur du sommet.
+/// Entrées par case : 3 couleurs par étage, plus 3 pour le sommet.
 pub const SLOTS: usize = LEVELS * 3 + 3;
 pub const INPUTS: usize = 16 * SLOTS;
-/// Échelle de sortie (comme `scale` de l'évaluation linéaire).
+/// Échelle de sortie, pour obtenir un score entier.
 pub const SCALE: f32 = 1000.0;
 
 /// Couleur relative : 0 = à moi, 1 = adverse, 2 = neutre.
@@ -34,8 +29,7 @@ fn rel(c: u8, me: u8) -> usize {
     if c == NEUTRAL { 2 } else if c == me { 0 } else { 1 }
 }
 
-/// Appelle `f(indice)` pour chaque entrée active du point de vue de `me` (une fois par galet :
-/// une entrée peut donc revenir plusieurs fois à l'étage « 6 et plus »).
+/// Appelle `f(indice)` pour chaque entrée active du point de vue de `me`.
 #[inline]
 pub fn for_each_input(g: &Game, me: u8, mut f: impl FnMut(usize)) {
     let mut occ = g.occupied();
@@ -54,54 +48,51 @@ pub fn for_each_input(g: &Game, me: u8, mut f: impl FnMut(usize)) {
     }
 }
 
-/// Entrées denses (comptes) du point de vue de `me` : pour l'export vers Python.
+/// Entrées sous forme de vecteur, pour l'export vers Python.
 pub fn dense_inputs(g: &Game, me: u8) -> [u8; INPUTS] {
     let mut v = [0u8; INPUTS];
     for_each_input(g, me, |i| v[i] += 1);
     v
 }
 
-/// Taille de la deuxième couche cachée (fixe : tableaux sur la pile, boucles déroulées).
+/// Taille de la deuxième couche cachée. Elle est fixe pour que le compilateur optimise les boucles.
 pub const HIDDEN2: usize = 32;
-/// Taille maximale de l'accumulateur (tableaux fixes, sans allocation pendant la recherche).
+/// Taille maximale de l'accumulateur. Tableaux fixes : aucune allocation pendant la recherche.
 pub const MAX_HIDDEN: usize = 512;
-/// Activation quantifiée : 0..=ACT_MAX représente 0..=1 (u8 ; 2 × 127 × 127 tient dans un i16 pour maddubs).
+/// Activation quantifiée : 0 à 127 représente 0 à 1.
 const ACT_MAX: i32 = 127;
 
-/// Réseau chargé : poids f32 d'origine (référence, contrôle contre PyTorch) et poids quantifiés
-/// utilisés en recherche : première couche en i16 (accumulateur entier), deuxième en i8.
+/// Réseau chargé. Garde les poids f32 d'origine et les poids quantifiés utilisés en recherche.
 #[derive(Clone, Debug)]
 pub struct Nnue {
     pub hidden: usize,
     pub hidden2: usize,
-    /// Une seule vue (joueur au trait) en entrée de la couche 2, au lieu de [trait, adversaire] (fichier « QNS1»).
+    /// Option expérimentale : une seule vue au lieu de deux.
     pub single: bool,
-    /// Entrées de la couche 2 : hidden (une vue) ou 2 × hidden (deux vues).
+    /// Nombre d'entrées de la couche 2.
     n_in: usize,
     w1: Vec<f32>,
     b1: Vec<f32>,
-    /// HIDDEN2 × n_in, comme PyTorch.
+    /// Même disposition que PyTorch.
     w2: Vec<f32>,
     b2: [f32; HIDDEN2],
     w3: [f32; HIDDEN2],
     b3: f32,
-    /// Accumulateur entier : valeur réelle × `s1` = 127 × 2^shift1 ; activation = clamp(acc >> shift1, 0, 127).
+    /// Accumulateur entier : valeur réelle multipliée par 127 × 2^shift1.
     s1: f32,
     shift1: u32,
-    /// INPUTS × hidden, × s1.
+    /// Poids de la première couche, quantifiés.
     w1q: Vec<i16>,
     b1q: Vec<i16>,
-    /// Couche 2 en i8 (× s2[j] pour le neurone j), rangée par groupes de 4 activations : pour le
-    /// groupe g, les 32 sorties à la suite, chacune avec ses 4 poids (disposition de `maddubs`).
+    /// Poids de la couche 2 en i8, rangés dans l'ordre attendu par l'instruction AVX2.
     w2q: Vec<i8>,
     s2: [f32; HIDDEN2],
-    /// 1 / (127 × s2[j]) : passage des sommes entières aux valeurs réelles.
+    /// Facteurs pour repasser des sommes entières aux valeurs réelles.
     inv2: [f32; HIDDEN2],
 }
 
 impl Nnue {
-    /// Fichier binaire écrit par train/train_nnue.py : « QNN1 » (deux vues) ou « QNS1 » (une vue), hidden et
-    /// hidden2 (u32), puis w1, b1, w2 (hidden2 × 2·hidden, ou hidden2 × hidden), b2, w3, b3 en f32 petit-boutiste.
+    /// Charge le fichier binaire écrit par train/train_nnue.py.
     pub fn load(path: &str) -> Result<Nnue, String> {
         let bytes = std::fs::read(path).map_err(|e| format!("{path} : {e}"))?;
         let single = match bytes.get(..4) {
@@ -147,9 +138,8 @@ impl Nnue {
         let n_in = if single { hidden } else { 2 * hidden };
         assert!(hidden.is_multiple_of(4) && hidden <= MAX_HIDDEN);
         assert_eq!((w1.len(), b1.len(), w2.len()), (INPUTS * hidden, hidden, HIDDEN2 * n_in));
-        // Échelle de l'accumulateur : la plus fine (127 × 2^k) qui garantit l'absence de débordement
-        // i16, en bornant |acc| par |biais| + la somme des 64 plus grands |poids| de chaque neurone
-        // (une position a au plus 28 galets + 16 sommets = 44 entrées actives).
+        // Échelle de l'accumulateur : la plus précise qui ne peut pas déborder d'un i16.
+        // On borne chaque neurone par la somme de ses plus grands poids.
         let mut bound = 0f32;
         for j in 0..hidden {
             let mut col: Vec<f32> = (0..INPUTS).map(|i| w1[i * hidden + j].abs()).collect();
@@ -164,8 +154,7 @@ impl Nnue {
         let q16 = |x: f32| (x * s1).round() as i16;
         let w1q = w1.iter().map(|&x| q16(x)).collect();
         let b1q = b1.iter().map(|&x| q16(x)).collect();
-        // Couche 2 : pour chaque neurone, la plus grande échelle telle que ses |poids| ≤ 127
-        // (une échelle commune serait fixée par le poids le plus extrême de toute la couche).
+        // Couche 2 : une échelle par neurone, plus précise qu'une échelle commune.
         let mut s2 = [0f32; HIDDEN2];
         for (j, s) in s2.iter_mut().enumerate() {
             let max = w2[j * n_in..(j + 1) * n_in].iter().fold(0f32, |m, x| m.max(x.abs()));
@@ -183,7 +172,7 @@ impl Nnue {
         Nnue { hidden, hidden2: HIDDEN2, single, n_in, w1, b1, w2, b2, w3, b3, s1, shift1, w1q, b1q, w2q, s2, inv2 }
     }
 
-    /// Échelles de quantification (accumulateur, plus petite échelle de la couche 2), pour information.
+    /// Échelles de quantification, pour information.
     pub fn scales(&self) -> (f32, f32) {
         (self.s1, self.s2.iter().fold(f32::MAX, |m, &s| m.min(s)))
     }
@@ -203,14 +192,12 @@ impl Nnue {
         out
     }
 
-    /// Sortie brute du réseau, du point de vue du joueur au trait (version quantifiée, celle du bot).
+    /// Sortie du réseau pour le joueur au trait, calculée en entiers.
     pub fn forward(&self, g: &Game) -> f32 {
         Accumulator::new(self, g).forward(g.player)
     }
 
-    /// Activations de la première couche en f32 (sans quantification) : [joueur au trait, adversaire],
-    /// après ReLU bornée (toujours les deux vues ; un réseau à une vue n'utilise que la première moitié).
-    /// Pour les contrôles contre PyTorch.
+    /// Activations de la première couche en f32, pour la vérification contre PyTorch.
     pub fn activations_f32(&self, g: &Game) -> Vec<f32> {
         let h = self.hidden;
         let mut acc = [self.b1.clone(), self.b1.clone()];
@@ -224,7 +211,7 @@ impl Nnue {
         acc[0].iter().chain(&acc[1]).map(|a| a.clamp(0.0, 1.0)).collect()
     }
 
-    /// Sortie brute en f32, calcul direct sans quantification (contrôle contre PyTorch).
+    /// Sortie en f32 sans quantification, pour la vérification contre PyTorch.
     pub fn forward_f32(&self, g: &Game) -> f32 {
         let n = self.n_in;
         let z = self.activations_f32(g);
@@ -242,12 +229,12 @@ impl Nnue {
     }
 }
 
-/// Sommes de la couche 2 : `sums[j] += Σ_k acts[k] × w2q[j][k]` (u8 × i8 → i32).
+/// Sommes de la couche 2 : `sums[j] += Σ_k acts[k] × w2q[j][k]`.
 #[inline]
 fn layer2(acts: &[u8], w2q: &[i8], sums: &mut [i32; HIDDEN2]) {
     #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
     {
-        // SAFETY : AVX2 garanti par la compilation ; tailles vérifiées dans la fonction.
+        // SAFETY : AVX2 est garanti à la compilation.
         unsafe { layer2_avx2(acts, w2q, sums) };
     }
     #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
@@ -259,17 +246,15 @@ fn layer2(acts: &[u8], w2q: &[i8], sums: &mut [i32; HIDDEN2]) {
     }
 }
 
-/// Version AVX2 : 4 activations diffusées dans tout le registre, `maddubs` (u8 × i8, sommes par paires
-/// en i16, sans saturation car 2 × 127 × 127 < 32767) puis `madd` par 1 (sommes en i32) :
-/// 32 multiplications-additions par instruction contre 8 en f32.
-/// Pas de test « 4 activations nulles ? » : une branche imprévisible coûte plus que le calcul.
+/// Version AVX2 : 32 multiplications-additions par instruction, contre 8 en f32.
+/// Pas de saturation possible, car 2 × 127 × 127 < 32767.
 #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
 #[target_feature(enable = "avx2")]
 unsafe fn layer2_avx2(acts: &[u8], w2q: &[i8], sums: &mut [i32; HIDDEN2]) {
     use std::arch::x86_64::*;
     const _: () = assert!(HIDDEN2 == 32);
     assert!(acts.len().is_multiple_of(4) && w2q.len() >= acts.len() * HIDDEN2);
-    // SAFETY : lectures dans `acts` et `w2q` (tailles vérifiées), écritures dans `sums` (32 i32).
+    // SAFETY : les tailles des tableaux sont vérifiées.
     unsafe {
         let ones = _mm256_set1_epi16(1);
         let mut s = [_mm256_setzero_si256(); 4];
@@ -288,10 +273,9 @@ unsafe fn layer2_avx2(acts: &[u8], w2q: &[i8], sums: &mut [i32; HIDDEN2]) {
     }
 }
 
-/// Accumulateurs entiers de la première couche pour les deux points de vue (Rouge = moi,
-/// Jaune = moi), tenus à jour galet par galet pendant la génération des coups
-/// (`Game::for_each_child_obs`). Tableaux fixes : aucune allocation. Arithmétique entière :
-/// la mise à jour incrémentale donne exactement le même résultat qu'un calcul complet.
+/// Accumulateurs de la première couche, un par joueur.
+/// Ils sont mis à jour galet par galet pendant la génération des coups.
+/// Le calcul est en entiers : la mise à jour donne exactement le même résultat qu'un calcul complet.
 pub struct Accumulator<'a> {
     net: &'a Nnue,
     acc: [[i16; MAX_HIDDEN]; 2],
@@ -331,7 +315,7 @@ impl<'a> Accumulator<'a> {
         }
     }
 
-    /// Activations quantifiées (u8, 0..=127) : [joueur au trait `stm`, adversaire si `both`] ; renvoie leur nombre.
+    /// Activations quantifiées ; renvoie leur nombre.
     #[inline]
     fn activations(&self, stm: u8, both: bool, acts: &mut [u8; 2 * MAX_HIDDEN]) -> usize {
         let h = self.net.hidden;
@@ -344,7 +328,7 @@ impl<'a> Accumulator<'a> {
         if both { 2 * h } else { h }
     }
 
-    /// Sortie brute pour le joueur au trait `stm`.
+    /// Sortie du réseau pour le joueur au trait `stm`.
     #[inline]
     pub fn forward(&self, stm: u8) -> f32 {
         let mut acts = [0u8; 2 * MAX_HIDDEN];
@@ -354,7 +338,7 @@ impl<'a> Accumulator<'a> {
         self.net.output(&sums)
     }
 
-    /// Scores de la tête de politique (un par case de départ) pour le joueur au trait `stm`.
+    /// Option expérimentale `policy=`.
     #[inline]
     pub fn policy(&self, p: &Policy, stm: u8) -> [f32; 16] {
         debug_assert_eq!(p.hidden, self.net.hidden);
@@ -372,14 +356,11 @@ impl<'a> Accumulator<'a> {
     }
 }
 
-/// Tête de politique « case de départ » (train/train_policy.py), posée sur l'accumulateur d'un réseau
-/// donné (même première couche) : un score par case, pour générer d'abord les coups des cases
-/// prometteuses au dernier étage de la recherche. Calcul quantifié par la même fonction que la couche 2
-/// (16 sorties utiles sur 32).
+/// Option expérimentale `policy=` : un score par case de départ.
 #[derive(Clone, Debug)]
 pub struct Policy {
     pub hidden: usize,
-    /// 16 × (2 × hidden) en f32 (référence) ; quantifiés dans `wq` (disposition de `layer2`).
+    /// Poids f32 d'origine.
     w: Vec<f32>,
     b: [f32; 16],
     wq: Vec<i8>,
@@ -387,7 +368,7 @@ pub struct Policy {
 }
 
 impl Policy {
-    /// Fichier « QPOL1 » : hidden (u32), puis poids 16 × 2·hidden et biais 16 en f32 petit-boutiste.
+    /// Charge un fichier de politique.
     pub fn load(path: &str) -> Result<Policy, String> {
         let bytes = std::fs::read(path).map_err(|e| format!("{path} : {e}"))?;
         if bytes.len() < 9 || &bytes[..5] != b"QPOL1" {
@@ -412,7 +393,7 @@ impl Policy {
         Ok(Policy { hidden, w: w.to_vec(), b: b.try_into().unwrap(), wq, inv })
     }
 
-    /// Scores en f32 sans quantification (contrôle contre PyTorch) ; `net` = le réseau d'origine.
+    /// Scores en f32 sans quantification.
     pub fn logits_f32(&self, net: &Nnue, g: &Game) -> [f32; 16] {
         let z = net.activations_f32(g);
         std::array::from_fn(|j| self.b[j] + z.iter().zip(&self.w[j * 2 * self.hidden..]).map(|(a, w)| a * w).sum::<f32>())
@@ -435,7 +416,7 @@ mod tests {
     use super::*;
     use crate::game::{Status, MAX_STONES_PER_PLAYER};
 
-    /// Réseau aléatoire (pour les tests) : poids réguliers mais distincts.
+    /// Réseau aléatoire pour les tests.
     fn test_net(hidden: usize, single: bool) -> Nnue {
         let mut x = 12345u64;
         let mut r = |n: usize, s: f32| -> Vec<f32> {
@@ -454,9 +435,8 @@ mod tests {
         Nnue::from_parts(hidden, single, w1, b1, w2, b2, w3, 0.1)
     }
 
-    /// L'accumulateur tenu à jour pendant la génération des coups donne exactement la même sortie
-    /// qu'un calcul complet sur chaque enfant, revient exactement à la position de départ, et la
-    /// version quantifiée reste proche du calcul f32.
+    /// L'accumulateur incrémental donne la même sortie qu'un calcul complet.
+    /// La version quantifiée reste proche du calcul f32.
     #[test]
     fn incremental_matches_full() {
         for single in [false, true] {
@@ -483,8 +463,8 @@ mod tests {
         }
     }
 
-    /// Chaque galet donne exactement une entrée d'étage, chaque case occupée une entrée de sommet,
-    /// et changer de point de vue échange « à moi » et « adverse ».
+    /// Chaque galet donne une entrée, et chaque case occupée une entrée de sommet.
+    /// Changer de point de vue échange « à moi » et « adverse ».
     #[test]
     fn inputs_count_and_swap() {
         let mut g = Game::with_stones(MAX_STONES_PER_PLAYER);

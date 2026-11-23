@@ -1,10 +1,9 @@
-//! Moteur de Qawale : représentation de l'état, génération et application des coups.
+//! Moteur de Qawale : état du jeu, génération et application des coups.
 //!
 //! Conventions :
-//! - case `sq = row * 4 + col`, `row` 0 = ligne « 1 », `col` 0 = colonne « a » ;
-//! - couleurs sur 2 bits : 0 = rouge (joueur 0), 1 = jaune (joueur 1), 2 = neutre ;
-//! - dans `stacks[sq]`, la tuile du **bas** est dans les bits de poids faible,
-//!   ce qui rend « poser au sommet » et « retirer par le bas » triviaux.
+//! - case `sq = row * 4 + col`. `row` 0 est la ligne 1, `col` 0 est la colonne a.
+//! - couleurs sur 2 bits : 0 = rouge, 1 = jaune, 2 = neutre.
+//! - dans `stacks[sq]`, le galet du bas est dans les bits de poids faible.
 
 use std::fmt;
 
@@ -14,38 +13,33 @@ pub const NEUTRAL: u8 = 2;
 
 pub const STONES_PER_PLAYER: u8 = 8;
 
-/// Limite imposée par le codage des coups et des piles. Après un coup, au moins 2 cases sont occupées,
-/// donc la pile jouée compte au plus 8 + 2n − 1 galets (placé compris), soit 7 + 2n directions :
-/// - version officielle (coups et piles sur 64 bits, longueur sur 5 bits) : 4 + 5 + 2 × (7 + 2n) ≤ 64,
-///   soit n ≤ 10 (63 bits) ;
-/// - option de compilation `more-stones` (coups et piles sur 128 bits, longueur sur 6 bits) :
-///   4 + 6 + 2 × (7 + 2n) ≤ 128, soit n ≤ 26 (128 bits ; piles : 8 + 2n = 60 ≤ 64 galets).
+/// Nombre maximal de galets par joueur, limité par la taille d'un coup.
+/// Un coup a au plus 7 + 2n directions de 2 bits.
+/// Sur 64 bits, cela donne n ≤ 10. Sur 128 bits (`more-stones`), n ≤ 26.
 #[cfg(not(feature = "more-stones"))]
 pub const MAX_STONES_PER_PLAYER: u8 = 10;
 #[cfg(feature = "more-stones")]
 pub const MAX_STONES_PER_PLAYER: u8 = 26;
 
-/// Entier qui contient un coup : u64 dans la version officielle (aucun surcoût), u128 avec l'option
-/// de compilation `more-stones` (`cargo run --release --features more-stones`).
+/// Entier qui contient un coup (u128 avec `more-stones`).
 #[cfg(not(feature = "more-stones"))]
 pub type MoveBits = u64;
 #[cfg(feature = "more-stones")]
 pub type MoveBits = u128;
 
-/// Contenu d'une pile (2 bits par galet, le bas dans les bits faibles) : u64 (32 galets au plus) dans la
-/// version officielle, u128 (64 galets) avec `more-stones`.
+/// Contenu d'une pile, 2 bits par galet (u128 avec `more-stones`).
 #[cfg(not(feature = "more-stones"))]
 pub type StackBits = u64;
 #[cfg(feature = "more-stones")]
 pub type StackBits = u128;
 
-/// Bits du champ « longueur du chemin » d'un coup : 5 (≤ 31 directions), 6 avec `more-stones` (≤ 63).
+/// Nombre de bits pour la longueur du chemin dans un coup.
 #[cfg(not(feature = "more-stones"))]
 const LEN_BITS: u32 = 5;
 #[cfg(feature = "more-stones")]
 const LEN_BITS: u32 = 6;
 const LEN_MASK: MoveBits = (1 << LEN_BITS) - 1;
-/// Position de la première direction dans un coup (après 4 bits de case et le champ longueur).
+/// Position de la première direction dans un coup.
 const DIR_SHIFT: u32 = 4 + LEN_BITS;
 
 /// Directions : haut (+1 ligne), bas, gauche, droite. `d ^ 1` = direction opposée.
@@ -79,7 +73,7 @@ pub const LINES: [u16; 10] = [
 ];
 
 /// Les 8 symétries du carré, en permutations de cases : `SYM[s][sq]` = image de `sq`.
-/// Elles conservent lignes, colonnes et diagonales, donc la valeur d'une position.
+/// Elles conservent les alignements, donc la valeur d'une position.
 pub const SYM: [[u8; 16]; 8] = {
     let mut t = [[0u8; 16]; 8];
     let mut sq = 0;
@@ -130,8 +124,7 @@ pub const INV_SYM: [usize; 8] = {
     t
 };
 
-/// `DIR_SYM[s][d]` = image de la direction `d` par la symétrie `s`
-/// (déduite de l'image d'une case centrale et de ses voisins).
+/// `DIR_SYM[s][d]` = image de la direction `d` par la symétrie `s`.
 pub const DIR_SYM: [[u8; 4]; 8] = {
     let mut t = [[0u8; 4]; 8];
     let mut s = 0;
@@ -155,13 +148,12 @@ pub const DIR_SYM: [[u8; 4]; 8] = {
     t
 };
 
-/// Hauteur maximale d'une pile (tous les galets possibles).
+/// Hauteur maximale d'une pile.
 pub const MAX_STACK: usize = 8 + 2 * MAX_STONES_PER_PLAYER as usize;
 
-/// Clés Zobrist, déjà permutées pour les 8 symétries :
-/// `ZOBRIST[sq][niveau * 3 + couleur][s]` = clé de (image de `sq` par `s`, niveau, couleur).
-/// Les 8 variantes sont contiguës (64 octets) : une seule ligne de cache par mise à jour.
-/// Le joueur au trait n'a pas besoin de clé : il se déduit du nombre de galets posés.
+/// Clés Zobrist, une par (case, niveau, couleur) et par symétrie.
+/// Les 8 clés d'un galet tiennent dans une ligne de cache.
+/// Pas de clé pour le joueur au trait : il se déduit du nombre de galets posés.
 static ZOBRIST: [[[u64; 8]; MAX_STACK * 3]; 16] = {
     let mut base = [[0u64; MAX_STACK * 3]; 16];
     let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
@@ -196,12 +188,11 @@ static ZOBRIST: [[[u64; 8]; MAX_STACK * 3]; 16] = {
     t
 };
 
-/// Que se passe-t-il si un coup aligne les deux couleurs en même temps ?
-/// (À vérifier dans la règle officielle ; modifiable ici.)
+/// Si un coup aligne les deux couleurs, le joueur qui vient de jouer gagne.
 pub const DOUBLE_ALIGNMENT_MOVER_WINS: bool = true;
 
-/// Un coup compacté dans un `MoveBits` (u64, ou u128 avec `more-stones`) :
-/// bits 0-3 case de départ, puis la longueur du chemin (LEN_BITS bits), puis les directions (2 bits chacune).
+/// Un coup compacté dans un entier.
+/// Bits 0-3 : case de départ. Puis la longueur du chemin. Puis les directions, 2 bits chacune.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Move(pub MoveBits);
 
@@ -212,7 +203,7 @@ impl Move {
     pub fn square(self) -> u8 { (self.0 & 0xF) as u8 }
     #[inline]
     pub fn len(self) -> u32 { ((self.0 >> 4) & LEN_MASK) as u32 }
-    /// Coup vide (aucune direction) : jamais un coup légal, sert de valeur « aucun coup ».
+    /// Coup vide, utilisé comme « aucun coup ».
     #[inline]
     pub fn is_empty(self) -> bool { self.len() == 0 }
     #[inline]
@@ -233,7 +224,7 @@ impl Move {
         m
     }
 
-    /// Construit un coup à partir d'une case et d'une liste de directions (sans validation).
+    /// Construit un coup à partir d'une case et de directions, sans vérifier sa légalité.
     pub fn from_path(sq: u8, dirs: &[u8]) -> Move {
         dirs.iter().fold(Move::new(sq), |m, &d| m.push(d))
     }
@@ -257,16 +248,16 @@ impl fmt::Display for Move {
     }
 }
 
-/// Reçoit chaque changement de galet pendant la génération des coups (`for_each_child_obs`),
-/// pour tenir à jour une évaluation incrémentale (accumulateur NNUE).
+/// Reçoit chaque galet ajouté ou retiré pendant la génération des coups.
+/// Sert à mettre à jour l'accumulateur NNUE.
 pub trait StoneObserver {
-    /// Galet de couleur `color` ajouté (`add`) ou retiré à l'étage `level` (0 = bas) de la case `sq`.
+    /// Galet ajouté ou retiré à l'étage `level` de la case `sq`.
     fn stone(&mut self, sq: usize, level: u8, color: u8, add: bool);
-    /// Le sommet de `sq` devient (`add`) ou cesse d'être de couleur `color`.
+    /// Le sommet de `sq` devient, ou cesse d'être, de couleur `color`.
     fn top(&mut self, sq: usize, color: u8, add: bool);
 }
 
-/// Observateur facultatif (par exemple un accumulateur seulement si le bot a un réseau).
+/// Observateur facultatif.
 impl<T: StoneObserver> StoneObserver for Option<T> {
     #[inline(always)]
     fn stone(&mut self, sq: usize, level: u8, color: u8, add: bool) {
@@ -282,7 +273,7 @@ impl<T: StoneObserver> StoneObserver for Option<T> {
     }
 }
 
-/// Observateur vide : `for_each_child` sans surcoût.
+/// Observateur vide, sans aucun coût.
 pub struct NoObserver;
 
 impl StoneObserver for NoObserver {
@@ -384,7 +375,7 @@ impl Game {
         h[0].min(h[1]).min(h[2].min(h[3])).min(h[4].min(h[5]).min(h[6].min(h[7])))
     }
 
-    /// Clé canonique et symétrie qui l'atteint (repère canonique = position transformée par `s`).
+    /// Clé canonique et symétrie qui la donne.
     #[inline]
     pub fn canonical(&self) -> (u64, usize) {
         let mut best = (self.hash[0], 0);
@@ -404,8 +395,7 @@ impl Game {
         }
     }
 
-    /// Reconstruit une position à partir du contenu des piles (du bas vers le haut),
-    /// des réserves et du joueur au trait.
+    /// Reconstruit une position à partir des piles, des réserves et du joueur au trait.
     pub fn from_stacks(stacks: &[Vec<u8>; 16], reserve: [u8; 2], player: u8) -> Game {
         let mut g = Game { tops_red: 0, tops_yellow: 0, tops_neutral: 0, heights: [0; 16], stacks: [0; 16], reserve, player, hash: [0; 8] };
         for (sq, st) in stacks.iter().enumerate() {
@@ -416,7 +406,7 @@ impl Game {
         g
     }
 
-    /// Position image par la symétrie `s` (utile pour les tests).
+    /// Image de la position par la symétrie `s`.
     pub fn transform(&self, s: usize) -> Game {
         let mut g = Game { heights: [0; 16], stacks: [0; 16], tops_red: 0, tops_yellow: 0, tops_neutral: 0, hash: [0; 8], ..*self };
         for (sq, &dst) in SYM[s].iter().enumerate() {
@@ -464,8 +454,8 @@ impl Game {
         self.set_top_bit(sq, top);
     }
 
-    /// Pose un galet du joueur courant sur `sq` et soulève toute la pile.
-    /// Renvoie (contenu de la pile, hauteur). Le joueur courant change.
+    /// Pose un galet sur `sq` et soulève toute la pile.
+    /// Renvoie la pile et sa hauteur.
     #[inline]
     fn place_and_lift(&mut self, sq: usize) -> (StackBits, u32) {
         let p = self.player;
@@ -483,14 +473,14 @@ impl Game {
     }
 
     #[inline]
-    // Faux positif de clippy (1.98) : sa suggestion `LINES.contains(&(bb & m))` utiliserait `m` hors de la fermeture.
+    // Faux positif de clippy.
     #[allow(clippy::manual_contains)]
     pub fn has_won(&self, player: u8) -> bool {
         let bb = self.tops(player);
         LINES.iter().any(|&m| (bb & m) == m)
     }
 
-    /// Statut de la position (à appeler juste après un coup ; le « mover » est `player ^ 1`).
+    /// Statut de la position, à appeler juste après un coup.
     pub fn status(&self) -> Status {
         let red = self.has_won(RED);
         let yellow = self.has_won(YELLOW);
@@ -506,16 +496,15 @@ impl Game {
         }
     }
 
-    /// Parcourt tous les coups légaux en appelant `f(coup, position_résultante)`.
-    /// Aucune allocation : l'état est modifié puis restauré pendant le DFS.
-    /// Si `f` renvoie `false`, l'énumération s'arrête (utile pour les coupures alpha-bêta).
-    /// Renvoie `false` si l'énumération a été interrompue.
+    /// Appelle `f(coup, position_résultante)` pour chaque coup légal.
+    /// Aucune allocation : l'état est modifié puis restauré pendant le parcours.
+    /// Si `f` renvoie `false`, le parcours s'arrête (coupure alpha-bêta).
     pub fn for_each_child<F: FnMut(Move, &Game) -> bool>(&self, mut f: F) -> bool {
         self.for_each_child_obs(&mut NoObserver, |m, g, _| f(m, g))
     }
 
-    /// Comme `for_each_child`, en signalant à `obs` chaque galet ajouté ou retiré : quand `f` est
-    /// appelée, `obs` décrit exactement la position enfant. En sortie, `obs` décrit de nouveau `self`.
+    /// Comme `for_each_child`, en signalant à `obs` chaque galet ajouté ou retiré.
+    /// Quand `f` est appelée, `obs` décrit la position enfant.
     pub fn for_each_child_obs<O: StoneObserver, F: FnMut(Move, &Game, &O) -> bool>(&self, obs: &mut O, mut f: F) -> bool {
         if self.reserve[self.player as usize] == 0 {
             return true;
@@ -531,10 +520,7 @@ impl Game {
         true
     }
 
-    /// Comme `for_each_child_obs`, mais en prenant les cases de départ dans l'ordre de `squares`
-    /// (qui doit contenir chaque case occupée exactement une fois) : pour essayer d'abord les coups
-    /// partant des cases les plus prometteuses.
-    /// Avec un `guide` (voir `PathGuide`), les chemins sont aussi ordonnés, pas à pas.
+    /// Comme `for_each_child_obs`, avec les cases de départ dans l'ordre de `squares`.
     pub fn for_each_child_ordered_obs<O: StoneObserver, F: FnMut(Move, &Game, &O) -> bool>(
         &self,
         squares: &[u8],
@@ -635,12 +621,10 @@ impl Game {
     }
 }
 
-/// Guide pour ordonner les chemins : `guide[sq][k]` = intérêt de la meilleure case où le dernier galet
-/// (celui du joueur, qui finit au sommet) peut arriver en exactement `k` pas depuis `sq`.
+/// `guide[sq][k]` = intérêt de la meilleure case atteignable en `k` pas depuis `sq`.
 pub type PathGuide = [[i32; MAX_STACK + 1]; 16];
 
-/// DFS sur les chemins de dépôt : à chaque pas on dépose la tuile du bas de la main.
-/// Avec un `guide`, les directions sont essayées de la plus prometteuse à la moins prometteuse.
+/// Parcours en profondeur des chemins : à chaque pas, on dépose le galet du bas de la main.
 #[allow(clippy::too_many_arguments)]
 fn walk<O: StoneObserver, F: FnMut(Move, &Game, &O) -> bool>(
     g: &mut Game,
@@ -656,7 +640,7 @@ fn walk<O: StoneObserver, F: FnMut(Move, &Game, &O) -> bool>(
     if remaining == 0 {
         return f(mv, g, obs);
     }
-    let back = prev ^ 1; // si prev == NONE, back vaut 0xFE : jamais égal à une direction
+    let back = prev ^ 1; // direction interdite (demi-tour)
     let Some(gd) = guide else {
         for d in 0..4u8 {
             if d != back && NEIGHBOR[sq][d as usize] != NONE && !step(g, d, NEIGHBOR[sq][d as usize] as usize, hand, remaining, mv, guide, obs, f) {
@@ -665,8 +649,6 @@ fn walk<O: StoneObserver, F: FnMut(Move, &Game, &O) -> bool>(
         }
         return true;
     };
-    // Directions possibles (jusqu'à 4 au premier pas, sans demi-tour interdit), triées par l'intérêt
-    // de la meilleure case d'arrivée encore atteignable.
     let (mut dirs, mut keys, mut nd) = ([0u8; 4], [0i32; 4], 0);
     for d in 0..4u8 {
         let n = NEIGHBOR[sq][d as usize];
@@ -692,7 +674,7 @@ fn walk<O: StoneObserver, F: FnMut(Move, &Game, &O) -> bool>(
     true
 }
 
-/// Un pas du parcours : dépose le galet du bas de la main sur `n` (direction `d`), poursuit, puis annule.
+/// Un pas du parcours : dépose un galet sur `n`, continue, puis annule.
 #[allow(clippy::too_many_arguments)]
 #[inline]
 fn step<O: StoneObserver, F: FnMut(Move, &Game, &O) -> bool>(
@@ -765,8 +747,7 @@ mod tests {
         }
     }
 
-    /// Longue partie aléatoire : `play` et `for_each_child` concordent, le hachage
-    /// incrémental est cohérent et aucun galet n'est perdu.
+    /// Partie aléatoire : `play` et `for_each_child` concordent, et le hachage reste cohérent.
     fn check_random_game(stones: u8, mut rng: u64) {
         let mut g = Game::with_stones(stones);
         loop {
@@ -792,7 +773,7 @@ mod tests {
         }
     }
 
-    /// Le plus long coup possible (7 + 2n directions) tient dans un coup, et la plus haute pile dans une pile.
+    /// Le plus long coup et la plus haute pile tiennent dans leurs entiers.
     #[test]
     fn longest_move_fits() {
         let max_len = 8 + 2 * MAX_STONES_PER_PLAYER as usize - 1;
