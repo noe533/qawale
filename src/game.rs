@@ -13,31 +13,38 @@ pub const NEUTRAL: u8 = 2;
 
 pub const STONES_PER_PLAYER: u8 = 8;
 
-/// Nombre maximal de galets par joueur, limité par la taille d'un coup.
-/// Un coup a au plus 7 + 2n directions de 2 bits.
-/// Sur 64 bits, cela donne n ≤ 10. Sur 128 bits (`more-stones`), n ≤ 26.
+/// Tailles de la version par défaut : coups et piles sur 64 bits.
 #[cfg(not(feature = "more-stones"))]
-pub const MAX_STONES_PER_PLAYER: u8 = 10;
-#[cfg(feature = "more-stones")]
-pub const MAX_STONES_PER_PLAYER: u8 = 26;
+mod sizes {
+    /// Nombre maximal de galets par joueur, limité par la taille d'un coup.
+    pub const MAX_STONES_PER_PLAYER: u8 = 10;
+    /// Entier qui contient un coup.
+    pub type MoveBits = u64;
+    /// Contenu d'une pile, 2 bits par galet.
+    pub type StackBits = u64;
+    /// Nombre de bits pour la longueur du chemin dans un coup.
+    pub const LEN_BITS: u32 = 5;
+}
 
-/// Entier qui contient un coup (u128 avec `more-stones`).
-#[cfg(not(feature = "more-stones"))]
-pub type MoveBits = u64;
+/// Tailles avec l'option `more-stones` : coups et piles sur 128 bits.
 #[cfg(feature = "more-stones")]
-pub type MoveBits = u128;
+mod sizes {
+    pub const MAX_STONES_PER_PLAYER: u8 = 26;
+    pub type MoveBits = u128;
+    pub type StackBits = u128;
+    pub const LEN_BITS: u32 = 6;
+}
 
-/// Contenu d'une pile, 2 bits par galet (u128 avec `more-stones`).
-#[cfg(not(feature = "more-stones"))]
-pub type StackBits = u64;
-#[cfg(feature = "more-stones")]
-pub type StackBits = u128;
+pub use sizes::{MoveBits, StackBits, MAX_STONES_PER_PLAYER};
+use sizes::LEN_BITS;
 
-/// Nombre de bits pour la longueur du chemin dans un coup.
-#[cfg(not(feature = "more-stones"))]
-const LEN_BITS: u32 = 5;
-#[cfg(feature = "more-stones")]
-const LEN_BITS: u32 = 6;
+// Vérifié à la compilation : un coup a au plus 7 + 2n directions de 2 bits,
+// et la plus haute pile a 8 + 2n galets de 2 bits.
+const MAX_MOVE_LEN: u32 = 7 + 2 * MAX_STONES_PER_PLAYER as u32;
+const _: () = assert!(MAX_MOVE_LEN < 1 << LEN_BITS);
+const _: () = assert!(DIR_SHIFT + 2 * MAX_MOVE_LEN <= MoveBits::BITS);
+const _: () = assert!(2 * MAX_STACK as u32 <= StackBits::BITS);
+
 const LEN_MASK: MoveBits = (1 << LEN_BITS) - 1;
 /// Position de la première direction dans un coup.
 const DIR_SHIFT: u32 = 4 + LEN_BITS;
