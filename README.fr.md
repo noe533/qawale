@@ -30,7 +30,7 @@ Les tests sont en bas de chaque fichier (`cargo test --release`).
   redistribuer un galet par case **en commençant par celui du bas**, en se déplaçant orthogonalement,
   sans demi-tour immédiat (repasser sur une case est permis).
 - **Victoire** : 4 sommets de sa couleur alignés (ligne, colonne ou diagonale). Si un coup aligne les deux
-  couleurs à la fois (rarissime), le joueur qui vient de jouer gagne.
+  couleurs à la fois (rare), le joueur qui vient de jouer gagne.
 - Réserves épuisées sans alignement : match nul.
 
 ## Démarrage rapide

@@ -5,7 +5,7 @@
 Données : DOSSIER/nnue_x.npy (examples/export_nnue, point de vue de Rouge) et DOSSIER/meta.npy
 (examples/export_features), pour chaque dossier de --data (défaut : data/loop/it01..it13).
 Cible (joueur au trait, dans [-1, 1]) : valeur exacte si connue, sinon
-lam * tanh(score_recherche / K) + (1 - lam) * résultat, ±1 pour un gain/une perte forcés (comme train_eval.py).
+lam * tanh(score_recherche / K) + (1 - lam) * résultat, ±1 pour un gain/une perte forcés.
 Augmentation : chaque lot est transformé par une des 8 symétries du plateau, tirée au hasard.
 Validation : 1 partie sur 10. Comparaison : évaluation linéaire effilée (features.npy) sur la même cible.
 Sortie : fichier binaire QNN1 lu par `Nnue::load`, plus OUT.check.txt (sorties de référence pour nnue_check).
@@ -54,7 +54,7 @@ assert len(X) == len(M), "nnue_x.npy et meta.npy n'ont pas le même nombre de li
 game, ply, left, player, result, sdepth, sscore, exact, escore, old = M.T
 print(f"{len(X)} positions, {len(dirs)} dossiers, chargées en {time.time() - t0:.1f} s ({dev})")
 
-# Cible : identique à train_eval.py --k-fixed K --lam LAM --label d3.
+# Cible : mélange du score de recherche et du résultat, ou valeur exacte si connue.
 forced = np.abs(sscore) >= 999000
 has_search = ~np.isnan(sscore)
 lab = np.nan_to_num(sscore)
